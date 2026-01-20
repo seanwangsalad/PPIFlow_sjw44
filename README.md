@@ -100,7 +100,7 @@ python sample_antibody_nanobody.py \
 ---
 
 ### 3. Nanobody Design
-
+This notebook(```demo_vhh.ipynb```) demonstrates the end-to-end computational pipeline for designing VHH (Nanobody) binders. We use a combination of deep learning-based backbone generation, sequence design, and flow-based affinity maturation.
 Design nanobody CDR3 region for an antigen, parameters are similar to antibody design. 
 
 ```bash
