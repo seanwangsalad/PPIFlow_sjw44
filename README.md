@@ -42,7 +42,7 @@ python sample_binder.py \
     --input_pdb /path/to/target.pdb \
     --target_chain B \
     --binder_chain A \
-    --config /path/to/configs/inference_binder.yaml.yaml \
+    --config /path/to/configs/inference_binder.yaml \
     --specified_hotspots "B119,B141,B200" \
     --samples_min_length 75 \
     --samples_max_length 76 \
