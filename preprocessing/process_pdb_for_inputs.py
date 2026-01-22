@@ -27,9 +27,8 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     '--csv_file',
     help='Path to directory with PDB files.',
-    type=str,
-    default='/Users/linjie/projects/protein-frame-flow_gpuold/cd3_ucht1_RL/output_file.csv')
-    # default='/lustre/grp/cmclab/share/linj/frameflow_data/PPI/processed_ppi/domain_domain/val_cluster.csv')
+    type=str,)
+
 parser.add_argument(
     '--datatype',
     help='train or val',
@@ -39,9 +38,8 @@ parser.add_argument(
 parser.add_argument(
     '--write_dir',
     help='Path to write results to.',
-    type=str,
-    default='/Users/linjie/projects/protein-frame-flow_gpuold/cd3_ucht1_RL/pkl')
-    # default='/lustre/grp/cmclab/share/linj/frameflow_data/PPI/processed_ppi/domain_domain/val_pkl')
+    type=str,)
+
 parser.add_argument(
     '--num_processes',
     help='Number of processes.',
@@ -242,9 +240,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(args)
 
-    # pdb_path = '/lustre/grp/cmclab/share/guoly/ppi/binder_training/pinder_filter/val/6n64__B1_Q6P5D8--6n64__A1_Q6P5D8.pdb'
-    # out_dir = '../../6n64__B1_Q6P5D8--6n64__A1_Q6P5D8.pkl'
-    # meta = process_file(pdb_path, out_dir, interface_data=None, contact_data=None)
-    # print(meta)
+
 
 
