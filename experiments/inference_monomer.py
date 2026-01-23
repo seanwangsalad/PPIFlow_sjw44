@@ -29,13 +29,7 @@ class EvalRunner:
             cfg: inference config.
         """
         ckpt_path = cfg.inference.ckpt_path
-        ckpt_dir = os.path.dirname(ckpt_path)
-        ckpt_cfg = OmegaConf.load(os.path.join(ckpt_dir, 'config.yaml'))
 
-        # Set-up config.
-        OmegaConf.set_struct(cfg, False)
-        OmegaConf.set_struct(ckpt_cfg, False)
-        cfg = OmegaConf.merge(cfg, ckpt_cfg)
         self._cfg = cfg
         self._exp_cfg = cfg.experiment
         self._infer_cfg = cfg.inference
