@@ -11,7 +11,7 @@ source /lustre/grp/cmclab/share/anaconda3/etc/profile.d/conda.sh
 conda activate mlfold
 
 # 运行参数
-ABMPNN_CHECKPOINT="/lustre/grp/cmclab/share/wanghz/Programs/ProteinMPNN-qin/model_weights/"
+ABMPNN_CHECKPOINT="ProteinMPNN/model_weights/"
 FOLDER_WITH_PDBS=$1
 OUTPUT_DIR=$2
 POSITION_FIXED=$3
@@ -19,7 +19,7 @@ CHAINS_TO_DESIGN="A"
 NUM_SEQ_PER_TARGET=8
 SAMPLING_TEMP=0.5
 
-python /lustre/grp/cmclab/share/wanghz/Programs/ProteinMPNN-qin/protein_mpnn_run.py \
+python ProteinMPNN/protein_mpnn_run.py \
         --path_to_model_weights "$ABMPNN_CHECKPOINT" \
         --model_name "abmpnn" \
         --folder_with_pdbs "$FOLDER_WITH_PDBS" \
