@@ -21,7 +21,8 @@
         <MOVERS>
 		<FastRelax name="fast_relax" task_operations="rtrp,turn_off_others" relaxscript="rosettacon2018" repeats="2">
 			<MoveMap name="backbone">
-        			<Chain number="1" chi="1" bb="0"/>
+        			<Chain number="1" chi="1" bb="1"/>
+					<Chain number="2" chi="1" bb="0"/>
 			</MoveMap>
 		</FastRelax>
         </MOVERS>
