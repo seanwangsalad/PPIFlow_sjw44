@@ -458,9 +458,8 @@ class AntibodyPartialDataset(Dataset):
         chain_group_idx = feats["chain_group_idx"]
         fix_structure_mask = feats["fix_structure_mask"]
         fix_sequence_mask = feats["fix_structure_mask"] + framework_mask
-        # print("="*30)
-        # print(f"fix_structure_mask: {fix_structure_mask}")
-        # print(f"fix_sequence_mask: {fix_sequence_mask}")
+        # Binarize it to 0 or 1
+        fix_sequence_mask = (fix_sequence_mask > 0).float()  
 
         aatype = aatype * fix_sequence_mask + 20 * (1 - fix_sequence_mask)
         pos_fixed_mask = 1 - fix_structure_mask  # 0: fixed, 1: no fixed
