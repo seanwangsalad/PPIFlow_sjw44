@@ -323,8 +323,11 @@ def preprocess_csv_and_pkl(args, output_dir) -> str:
         metadata = process_file(input_info, write_dir=output_dir, id=id)
         metadata_df = pd.DataFrame([metadata])
         header = False if id > 0 else True
-        metadata_df.to_csv(csv_path, index=False, mode="a", header=header)
-
+        if header:
+            metadata_df.to_csv(csv_path, index=False, mode="w", header=header)
+        else:
+            metadata_df.to_csv(csv_path, index=False, mode="a", header=header)
+        
     return csv_path
 
 
