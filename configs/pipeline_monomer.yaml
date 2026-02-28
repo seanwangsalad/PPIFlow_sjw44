@@ -1,0 +1,33 @@
+# PPIFlow Pipeline Config – Monomer / Motif Scaffolding
+# Run with: python pipeline.py --config configs/pipeline_monomer.yaml --output /path/to/out --num_samples 5
+#
+# Two modes – use exactly ONE of the blocks below:
+#   Mode 1: Unconditional generation  → set length_subset, leave motif_csv null
+#   Mode 2: Motif scaffolding          → set motif_csv (and optionally motif_names)
+
+task: monomer   # use task: motif_scaffolding for mode 2 (both call the same script)
+
+# ── Mode 1: Unconditional ────────────────────────────────────────────────────
+length_subset: "[50, 100]"   # JSON list of target lengths
+
+# ── Mode 2: Motif Scaffolding ────────────────────────────────────────────────
+# Uncomment below and comment out length_subset to use scaffolding mode.
+# motif_csv: /path/to/motif_metadata.csv
+# motif_names: "['01_1LDB']"   # subset of targets from the CSV (optional)
+
+# ── Model ────────────────────────────────────────────────────────────────────
+config: /path/to/configs/inference_unconditional.yaml
+# config: /path/to/configs/inference_scaffolding.yaml   # use for motif mode
+model_weights: /path/to/model/monomer.ckpt
+
+# ── Run identity ─────────────────────────────────────────────────────────────
+# output_dir and num_samples are passed via --output and --num_samples CLI flags
+
+# ── ProteinMPNN (inverse folding) ────────────────────────────────────────────
+# Leave mpnn_weights unset (or remove the key) to skip inverse folding.
+mpnn_weights: /path/to/ProteinMPNN/model_weights
+model_name: v_48_020
+num_seqs_per_target: 8
+batch_size: 8
+sampling_temp: "0.1"
+mpnn_omit_AAs: "C"

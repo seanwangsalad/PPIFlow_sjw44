@@ -1,0 +1,39 @@
+# PPIFlow Pipeline Config – Antibody Design
+# Run with: python pipeline.py --config configs/pipeline_antibody.yaml --output /path/to/out --num_samples 5
+#
+# Designs antibody CDR loops for an antigen target.
+# Requires a framework PDB with CDR loops already removed (IMGT numbering).
+# Set light_chain to null or remove it entirely to switch to nanobody mode.
+
+task: antibody
+
+# ── Inputs ───────────────────────────────────────────────────────────────────
+antigen_pdb: /path/to/antigen.pdb
+framework_pdb: /path/to/antibody_framework.pdb
+
+antigen_chain: C          # chain ID of the antigen in antigen_pdb
+heavy_chain: A            # chain ID of the heavy chain in framework_pdb
+light_chain: B            # chain ID of the light chain; remove/null for nanobody
+
+# Hotspot residues on the antigen (chain prefix required)
+specified_hotspots: "C11,C14,C15,C101,C107,C108"
+
+# CDR length constraints: NAME,min-max pairs
+cdr_length: "CDRH1,8-8,CDRH2,8-8,CDRH3,10-20,CDRL1,6-9,CDRL2,3-3,CDRL3,9-11"
+
+# ── Model ────────────────────────────────────────────────────────────────────
+config: /path/to/configs/inference_nanobody.yaml
+model_weights: /path/to/model/antibody.ckpt
+
+# ── Run identity ─────────────────────────────────────────────────────────────
+# output_dir and num_samples are passed via --output and --num_samples CLI flags
+name: 1IJZ_IL13
+
+# ── ProteinMPNN (inverse folding) ────────────────────────────────────────────
+# Leave mpnn_weights unset (or remove the key) to skip inverse folding.
+mpnn_weights: /path/to/ProteinMPNN/model_weights
+model_name: abmpnn          # abmpnn for antibody/nanobody; v_48_020 for general
+num_seqs_per_target: 8
+batch_size: 8
+sampling_temp: "0.1"
+mpnn_omit_AAs: "C"          # amino acids to exclude (e.g. cysteine)

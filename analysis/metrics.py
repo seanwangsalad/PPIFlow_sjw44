@@ -7,6 +7,7 @@ from tmtools import tm_align
 from Bio.PDB import PDBParser
 import os
 import freesasa
+freesasa.setVerbosity(freesasa.nowarnings)
 import contextlib
 
 

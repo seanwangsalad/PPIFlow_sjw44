@@ -1,0 +1,50 @@
+# PPIFlow Pipeline Config – Partial Flow (Antibody / Nanobody Refinement)
+# Run with: python pipeline.py --config configs/pipeline_partial_flow_antibody.yaml --output /path/to/out --num_samples 3
+#
+# Locally redesigns CDR loops of an existing antibody-antigen complex.
+# start_t controls how much of the structure is preserved:
+#   close to 1.0 → gentle refinement   |   close to 0.0 → aggressive redesign
+# Use task: partial_flow_nanobody and omit light_chain for nanobody mode.
+
+task: partial_flow_antibody
+
+# ── Input complex ────────────────────────────────────────────────────────────
+complex_pdb: /path/to/antibody_antigen_complex.pdb
+
+# Residues that must not move (chain + residue range)
+fixed_positions: "A97-111"
+
+# All CDR residue ranges in the complex (IMGT numbering)
+cdr_position: "A26-33,A51-58,A97-111,B149-155,B173-175,B212-221"
+
+# ── Chains ───────────────────────────────────────────────────────────────────
+antigen_chain: C
+heavy_chain: A
+light_chain: B            # omit or set to null for nanobody mode
+
+# ── Hotspots ─────────────────────────────────────────────────────────────────
+specified_hotspots: "C320"
+
+# ── Partial-flow control ─────────────────────────────────────────────────────
+start_t: 0.5              # 0.0–1.0; higher = more structure preserved
+
+# ── Sampling ─────────────────────────────────────────────────────────────────
+# num_samples is passed via --num_samples CLI flag
+retry_Limit: 10
+
+# ── Model ────────────────────────────────────────────────────────────────────
+config: /path/to/configs/inference_nanobody.yaml
+model_weights: /path/to/model/antibody.ckpt
+
+# ── Run identity ─────────────────────────────────────────────────────────────
+# output_dir and num_samples are passed via --output and --num_samples CLI flags
+name: my_refinement_run
+
+# ── ProteinMPNN (inverse folding) ────────────────────────────────────────────
+# Leave mpnn_weights unset (or remove the key) to skip inverse folding.
+mpnn_weights: /path/to/ProteinMPNN/model_weights
+model_name: abmpnn
+num_seqs_per_target: 8
+batch_size: 8
+sampling_temp: "0.1"
+mpnn_omit_AAs: "C"

@@ -1,0 +1,42 @@
+# PPIFlow Pipeline Config – Binder Design
+# Run with: python pipeline.py --config configs/pipeline_binder.yaml --output /path/to/out --num_samples 5
+#
+# De novo protein binder design against a target chain.
+# Provide either input_pdb OR input_csv (not both).
+
+task: binder
+
+# ── Input (pick one) ─────────────────────────────────────────────────────────
+input_pdb: /path/to/target.pdb
+# input_csv: /path/to/preprocessed_input.csv   # alternative to input_pdb
+
+# ── Chains ───────────────────────────────────────────────────────────────────
+target_chain: B
+binder_chain: A           # required when specified_hotspots is null
+
+# ── Hotspots (optional) ──────────────────────────────────────────────────────
+# If omitted, hotspots are auto-detected from the binder interface.
+specified_hotspots: "B119,B141,B200"
+# sample_hotspot_rate_min: 0.2   # only used when specified_hotspots is null
+# sample_hotspot_rate_max: 0.5
+
+# ── Sampling ─────────────────────────────────────────────────────────────────
+samples_min_length: 75
+samples_max_length: 76
+
+# ── Model ────────────────────────────────────────────────────────────────────
+config: /path/to/configs/inference_binder.yaml
+model_weights: /path/to/model/binder.ckpt
+
+# ── Run identity ─────────────────────────────────────────────────────────────
+# output_dir and num_samples are passed via --output and --num_samples CLI flags
+name: IL7Ra
+
+# ── ProteinMPNN (inverse folding) ────────────────────────────────────────────
+# Leave mpnn_weights unset (or remove the key) to skip inverse folding.
+mpnn_weights: /path/to/ProteinMPNN/model_weights
+model_name: v_48_020        # v_48_020 for binder; abmpnn for antibody/nanobody
+num_seqs_per_target: 8
+batch_size: 8
+sampling_temp: "0.1"
+mpnn_omit_AAs: "C"

@@ -15,9 +15,9 @@ def make_fixed_positions_dict(parsed_chain_dict_list, chain_list, position_list,
         line = line.strip()
         if not line:
             continue
-        parts = line.split(",", 1)
+        parts = line.split("\t", 1)
         if len(parts) != 2:
-            raise ValueError(f"Invalid CSV line: {line}")
+            raise ValueError(f"Invalid CSV line (expected tab-separated pdb_name<TAB>motif_index): {line!r}")
         pdb_id = parts[0].strip()
         chains_pos_str = parts[1].split("-")
         fixed_dict[pdb_id] = []

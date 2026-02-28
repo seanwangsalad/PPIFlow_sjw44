@@ -1,0 +1,34 @@
+# PPIFlow Pipeline Config – Nanobody Design
+# Run with: python pipeline.py --config configs/pipeline_nanobody.yaml --output /path/to/out --num_samples 5
+#
+# Same script as antibody but light_chain is omitted (heavy chain only).
+
+task: nanobody
+
+# ── Inputs ───────────────────────────────────────────────────────────────────
+antigen_pdb: /path/to/antigen.pdb
+framework_pdb: /path/to/nanobody_framework.pdb
+
+antigen_chain: C
+heavy_chain: A
+# light_chain: omitted → nanobody mode
+
+specified_hotspots: "C101,C135,C171,C198"
+cdr_length: "CDRH1,8-8,CDRH2,8-8,CDRH3,9-21"
+
+# ── Model ────────────────────────────────────────────────────────────────────
+config: /path/to/configs/inference_nanobody.yaml
+model_weights: /path/to/model/nanobody.ckpt
+
+# ── Run identity ─────────────────────────────────────────────────────────────
+# output_dir and num_samples are passed via --output and --num_samples CLI flags
+name: 1CVS_FGFR1
+
+# ── ProteinMPNN (inverse folding) ────────────────────────────────────────────
+# Leave mpnn_weights unset (or remove the key) to skip inverse folding.
+mpnn_weights: /path/to/ProteinMPNN/model_weights
+model_name: abmpnn          # abmpnn for antibody/nanobody; v_48_020 for general
+num_seqs_per_target: 8
+batch_size: 8
+sampling_temp: "0.1"
+mpnn_omit_AAs: "C"

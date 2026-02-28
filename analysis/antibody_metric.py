@@ -4,6 +4,7 @@ from Bio.PDB import Superimposer
 import numpy as np
 import mdtraj as md
 import freesasa
+freesasa.setVerbosity(freesasa.nowarnings)
 from collections import defaultdict
 
 from typing import Tuple, Optional, Set
