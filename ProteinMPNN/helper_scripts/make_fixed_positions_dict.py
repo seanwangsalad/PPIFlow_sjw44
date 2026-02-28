@@ -12,8 +12,8 @@ def make_fixed_positions_dict(parsed_chain_dict_list, chain_list, position_list,
     with open(position_list, "r") as f:
         lines = f.readlines()
     for line in lines[1:]:  # 跳过表头
-        line = line.strip()
-        if not line:
+        line = line.rstrip("\n\r")
+        if not line.strip():
             continue
         parts = line.split("\t", 1)
         if len(parts) != 2:
@@ -38,7 +38,7 @@ def make_fixed_positions_dict(parsed_chain_dict_list, chain_list, position_list,
             seq_length = len(result[f'seq_chain_{chain}'])
             all_residues = list(range(1, seq_length + 1))
             if not specify_non_fixed:
-                fixed_position_dict[chain] = fixed_residues[idx] if chain in global_designed_chain_list else []
+                fixed_position_dict[chain] = (fixed_residues[idx] if idx < len(fixed_residues) else []) if chain in global_designed_chain_list else []
             else:
                 if chain not in global_designed_chain_list:
                     fixed_position_dict[chain] = all_residues

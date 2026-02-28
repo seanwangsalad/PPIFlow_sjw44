@@ -1,5 +1,6 @@
 samples/*
 figures/*
+weights/
 local_scripts/*
 .vscode
 .hydra/
