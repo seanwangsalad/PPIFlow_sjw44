@@ -38,12 +38,16 @@ All non-trivial helpers imported by `pipeline.py`:
 | `create_mpnn_fixed_positions_csv(output_dir)` | Scans PDBs by B-factor, writes `mpnn_fixed_positions.csv` |
 | `_detect_designed_chains(output_dir)` | Returns chain IDs that have both B-factor 4.0 and 2.0 |
 | `run_protein_mpnn(output_dir, csv_path, chain_list, cfg)` | Calls `protein_mpnn_run.main()` directly; output to `<output_dir>/mpnn_output/` |
+| `mpnn_fasta_to_csv(input_dirs, output_csv, suffix, top_n=5)` | Reads FASTA files from MPNN seqs dir; deduplicates; keeps top 5 lowest-score sequences per design; writes `seqsfinal_result.csv` with columns `link_name, seq, seq_idx, score` |
+| `graft_sequences_to_pdbs(output_dir, csv_path, designed_chains)` | For each row in `seqsfinal_result.csv`, replaces residue names on designed chains in the backbone PDB with the MPNN sequence; writes `mpnn_output/<basename>_<seq_idx>.pdb` |
 
 ## Pipeline Steps & State File
-Three tracked steps written to `<output_dir>/pipeline_state.json`:
-1. `binder_gen` – structure sampling
+Five tracked steps written to `<output_dir>/pipeline_state.json`:
+1. `binder_gen` / `nanobody_gen` / etc. – structure sampling
 2. `fixed_positions_csv` – `mpnn_fixed_positions.csv` creation
-3. `protein_mpnn` – ProteinMPNN inverse folding
+3. `protein_mpnn` – ProteinMPNN inverse folding (FASTA output to `mpnn_output/seqs/`)
+4. `fasta_to_csv` – top-5 selection → `mpnn_output/seqsfinal_result.csv`
+5. `graft_sequences` – sequence-grafted PDBs written to `mpnn_output/<name>_<seq_idx>.pdb`
 
 `--resume` loads the existing state file and skips any step whose `status == "done"`.
 
