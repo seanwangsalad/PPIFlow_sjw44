@@ -40,6 +40,8 @@ from helper_functions import (
     run_protein_mpnn,
 )
 
+from helper_functions import *
+
 import scripts.sample_binder as sample_binder
 import scripts.sample_antibody_nanobody as sample_antibody_nanobody
 import scripts.sample_monomer as sample_monomer
@@ -129,11 +131,36 @@ def inverse_folding(output_dir: str, cfg: dict, state: PipelineState) -> None:
 
     print(f"[pipeline.py] Designing chain(s): {chain_list!r}")
 
+    seqs_csv = os.path.join(output_dir, "mpnn_output", "seqsfinal_result.csv")
+
     if state.is_done("protein_mpnn"):
         print("[pipeline.py] Skipping protein_mpnn (already done).")
     else:
         run_protein_mpnn(output_dir, csv_path, chain_list, cfg)
         state.mark_done("protein_mpnn")
+
+    if state.is_done("fasta_to_csv"):
+        print("[pipeline.py] Skipping fasta_to_csv (already done).")
+    else:
+        mpnn_fasta_to_csv(
+            input_dirs=[os.path.join(output_dir, "mpnn_output", "seqs")],
+            output_csv=seqs_csv,
+            suffix=".pdb",
+        )
+        state.mark_done("fasta_to_csv")
+
+    if state.is_done("graft_sequences"):
+        print("[pipeline.py] Skipping graft_sequences (already done).")
+    else:
+        graft_sequences_to_pdbs(
+            output_dir=output_dir,
+            csv_path=seqs_csv,
+            designed_chains=designed_chains if designed_chains else chain_list.split(),
+        )
+        state.mark_done("graft_sequences")
+
+
+
 
 
 # ---------------------------------------------------------------------------

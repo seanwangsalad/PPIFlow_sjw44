@@ -7,8 +7,11 @@ Shared utilities used by pipeline.py.
 import glob
 import json
 import os
+import re
 from argparse import Namespace
 from datetime import datetime
+import csv
+from Bio import SeqIO
 
 import pandas as pd
 
@@ -389,3 +392,140 @@ def run_protein_mpnn(output_dir: str, csv_path: str, chain_list: str, cfg: dict)
 
     print(f"[inverse_folding] Running ProteinMPNN → {out_folder}")
     protein_mpnn_run.main(args)
+
+def mpnn_fasta_to_csv(input_dirs: list, output_csv: str, suffix: str = ".pdb", top_n: int = 5):
+
+    seen_seqs = set()
+    # link_name -> list of (score_float, seq_idx, seq_str)
+    per_name: dict = {}
+
+    for folder in input_dirs:
+        if not os.path.exists(folder):
+            continue
+        files = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(('.fasta', '.fa'))]
+
+        for file_path in files:
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            link_name = f"{base_name}{suffix}"
+
+            for i, record in enumerate(SeqIO.parse(file_path, "fasta")):
+                if i == 0:
+                    continue
+
+                seq_str = str(record.seq)
+                if seq_str in seen_seqs:
+                    continue
+                seen_seqs.add(seq_str)
+
+                m = re.search(r'(?<!_)\bscore=([0-9.]+)', record.description)
+                score = float(m.group(1)) if m else float("inf")
+
+                per_name.setdefault(link_name, []).append((score, str(i), seq_str))
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
+
+    total = 0
+    with open(output_csv, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(["link_name", "seq", "seq_idx", "score"])
+        for link_name, entries in per_name.items():
+            entries.sort(key=lambda x: x[0])
+            for score, seq_idx, seq_str in entries[:top_n]:
+                writer.writerow([link_name, seq_str, seq_idx, score])
+                total += 1
+
+    print(f"[mpnn_fasta_to_csv] {total} sequences (top {top_n} per design) written to: {output_csv}")
+
+
+# ---------------------------------------------------------------------------
+# Sequence grafting – write backbone PDBs with MPNN sequences applied
+# ---------------------------------------------------------------------------
+
+_AA1_TO_3 = {
+    'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP', 'C': 'CYS',
+    'Q': 'GLN', 'E': 'GLU', 'G': 'GLY', 'H': 'HIS', 'I': 'ILE',
+    'L': 'LEU', 'K': 'LYS', 'M': 'MET', 'F': 'PHE', 'P': 'PRO',
+    'S': 'SER', 'T': 'THR', 'W': 'TRP', 'Y': 'TYR', 'V': 'VAL',
+    'X': 'UNK',
+}
+
+
+def graft_sequences_to_pdbs(
+    output_dir: str,
+    csv_path: str,
+    designed_chains: list,
+) -> None:
+    """Graft MPNN-designed sequences onto backbone PDB files.
+
+    For each row in seqsfinal_result.csv, reads the backbone PDB from
+    output_dir/<link_name>, substitutes residue names on the designed chains
+    with the 1-letter → 3-letter translated sequence, and writes the result to
+    output_dir/mpnn_output/<basename>_<seq_idx>.pdb.
+
+    For multi-chain designs (antibody), the MPNN sequence is split across
+    chains in the same order as designed_chains, sized by residue count.
+    """
+    out_dir = os.path.join(output_dir, "mpnn_output")
+    os.makedirs(out_dir, exist_ok=True)
+
+    df = pd.read_csv(csv_path)
+    written = 0
+
+    for _, row in df.iterrows():
+        link_name = str(row["link_name"])
+        seq = str(row["seq"])
+        seq_idx = str(row["seq_idx"])
+
+        backbone_path = os.path.join(output_dir, link_name)
+        if not os.path.exists(backbone_path):
+            print(f"[graft] Warning: backbone PDB not found: {backbone_path}")
+            continue
+
+        # Collect ordered unique (resnum, icode) per chain
+        chain_residue_order: dict = {}
+        with open(backbone_path) as fh:
+            for line in fh:
+                if not line.startswith("ATOM"):
+                    continue
+                chain = line[21]
+                resnum = int(line[22:26])
+                icode = line[26]
+                key = (resnum, icode)
+                chain_residue_order.setdefault(chain, [])
+                if key not in chain_residue_order[chain]:
+                    chain_residue_order[chain].append(key)
+
+        # Split sequence across designed chains by residue count
+        resnum_to_aa: dict = {}  # chain -> {(resnum, icode): 3-letter}
+        pos = 0
+        for chain in designed_chains:
+            residues = chain_residue_order.get(chain, [])
+            n = len(residues)
+            chain_seq = seq[pos: pos + n]
+            pos += n
+            resnum_to_aa[chain] = {
+                key: _AA1_TO_3.get(aa1, "UNK")
+                for key, aa1 in zip(residues, chain_seq)
+            }
+
+        # Rewrite ATOM lines with substituted residue names
+        out_lines = []
+        with open(backbone_path) as fh:
+            for line in fh:
+                if line.startswith("ATOM"):
+                    chain = line[21]
+                    resnum = int(line[22:26])
+                    icode = line[26]
+                    key = (resnum, icode)
+                    if chain in resnum_to_aa and key in resnum_to_aa[chain]:
+                        res3 = resnum_to_aa[chain][key]
+                        line = line[:17] + res3 + line[20:]
+                out_lines.append(line)
+
+        base = os.path.splitext(link_name)[0]
+        out_path = os.path.join(out_dir, f"{base}_{seq_idx}.pdb")
+        with open(out_path, "w") as fh:
+            fh.writelines(out_lines)
+        written += 1
+
+    print(f"[graft] {written} sequence-grafted PDB files written to: {out_dir}")
