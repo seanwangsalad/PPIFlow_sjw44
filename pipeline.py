@@ -137,30 +137,34 @@ def inverse_folding(output_dir: str, cfg: dict, state: PipelineState) -> None:
         print("[pipeline.py] Skipping protein_mpnn (already done).")
     else:
         run_protein_mpnn(output_dir, csv_path, chain_list, cfg)
-        state.mark_done("protein_mpnn")
-
-    if state.is_done("fasta_to_csv"):
-        print("[pipeline.py] Skipping fasta_to_csv (already done).")
-    else:
         mpnn_fasta_to_csv(
             input_dirs=[os.path.join(output_dir, "mpnn_output", "seqs")],
             output_csv=seqs_csv,
             suffix=".pdb",
         )
-        state.mark_done("fasta_to_csv")
-
-    if state.is_done("graft_sequences"):
-        print("[pipeline.py] Skipping graft_sequences (already done).")
-    else:
         graft_sequences_to_pdbs(
             output_dir=output_dir,
             csv_path=seqs_csv,
             designed_chains=designed_chains if designed_chains else chain_list.split(),
         )
-        state.mark_done("graft_sequences")
+        state.mark_done("protein_mpnn")
 
+def run_fampnn(output_dir: str, cfg: dict, state: PipelineState) -> None:
+    """Pack sidechains on grafted PDBs using FAMPNN."""
+    if not cfg.get("fampnn_weights"):
+        print("[pipeline.py] 'fampnn_weights' not set – skipping FAMPNN sidechain packing.")
+        return
 
+    if state.is_done("fampnn"):
+        print("[pipeline.py] Skipping fampnn (already done).")
+        return
 
+    pack_sidechains_dir(
+        input_dir=os.path.join(output_dir, "mpnn_output"),
+        output_dir=os.path.join(output_dir, "fampnn_designs"),
+        checkpoint=cfg["fampnn_weights"],
+    )
+    state.mark_done("fampnn")
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +210,7 @@ def main() -> None:
         state.mark_done("binder_gen")
 
     inverse_folding(cli_args.output, cfg, state)
+    run_fampnn(cli_args.output, cfg, state)
 
 
 if __name__ == "__main__":

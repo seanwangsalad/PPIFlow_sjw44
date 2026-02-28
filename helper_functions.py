@@ -529,3 +529,40 @@ def graft_sequences_to_pdbs(
         written += 1
 
     print(f"[graft] {written} sequence-grafted PDB files written to: {out_dir}")
+
+
+# ---------------------------------------------------------------------------
+# FAMPNN sidechain packing
+# ---------------------------------------------------------------------------
+
+def pack_sidechains_dir(input_dir: str, output_dir: str, checkpoint: str) -> None:
+    """Run FAMPNN sidechain packing on every PDB in input_dir.
+
+    Imports pack_sidechains from the local fampnn/ subdirectory so no separate
+    installation is required.  Packed full-atom PDBs are written to output_dir
+    with the same filename as the input.
+
+    Args:
+        input_dir:   Directory of backbone+sequence PDB files (e.g. mpnn_output/).
+        output_dir:  Destination directory for packed full-atom PDBs.
+        checkpoint:  Path to FAMPNN weights (.pt).  Use fampnn_0_3.pt for FAMPNN 3.0.
+    """
+    import sys
+    fampnn_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fampnn")
+    if fampnn_dir not in sys.path:
+        sys.path.insert(0, fampnn_dir)
+    from pack_sidechains import pack_sidechains  # type: ignore[import]  # runtime sys.path insert
+
+    os.makedirs(output_dir, exist_ok=True)
+    pdb_files = sorted(glob.glob(os.path.join(input_dir, "*.pdb")))
+    if not pdb_files:
+        print(f"[fampnn] No PDB files found in {input_dir}")
+        return
+
+    for pdb_path in pdb_files:
+        name = os.path.basename(pdb_path)
+        out_path = os.path.join(output_dir, name)
+        print(f"[fampnn] Packing {name} ...")
+        pack_sidechains(pdb_path, out_path, checkpoint)
+
+    print(f"[fampnn] {len(pdb_files)} structures packed → {output_dir}")

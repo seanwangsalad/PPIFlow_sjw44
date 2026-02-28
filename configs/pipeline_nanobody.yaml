@@ -6,29 +6,32 @@
 task: nanobody
 
 # ── Inputs ───────────────────────────────────────────────────────────────────
-antigen_pdb: /path/to/antigen.pdb
-framework_pdb: /path/to/nanobody_framework.pdb
+antigen_pdb: ./TREM2_C_renum.pdb
+framework_pdb: ./7xl0_nanobody_framework.pdb
 
 antigen_chain: C
 heavy_chain: A
 # light_chain: omitted → nanobody mode
 
-specified_hotspots: "C101,C135,C171,C198"
+specified_hotspots: "C31,C63,C78"
 cdr_length: "CDRH1,8-8,CDRH2,8-8,CDRH3,9-21"
 
 # ── Model ────────────────────────────────────────────────────────────────────
-config: /path/to/configs/inference_nanobody.yaml
-model_weights: /path/to/model/nanobody.ckpt
-
-# ── Run identity ─────────────────────────────────────────────────────────────
-# output_dir and num_samples are passed via --output and --num_samples CLI flags
-name: 1CVS_FGFR1
+config: /home/seanwang/PPIFlow_sjw44/configs/inference_nanobody.yaml
+model_weights: /home/seanwang/PPIFlow_sjw44/weights/nanobody.ckpt
 
 # ── ProteinMPNN (inverse folding) ────────────────────────────────────────────
 # Leave mpnn_weights unset (or remove the key) to skip inverse folding.
-mpnn_weights: /path/to/ProteinMPNN/model_weights
+mpnn_weights: /home/seanwang/PPIFlow_sjw44/weights/MPNN/
 model_name: abmpnn          # abmpnn for antibody/nanobody; v_48_020 for general
 num_seqs_per_target: 8
 batch_size: 8
-sampling_temp: "0.1"
+sampling_temp: "0.5"
 mpnn_omit_AAs: "C"
+
+fampnn_weights: /home/seanwang/PPIFlow_sjw44/fampnn/weights/fampnn_0_3.pt
+
+
+# ── Run identity ─────────────────────────────────────────────────────────────
+# output_dir and num_samples are passed via --output and --num_samples CLI flags
+name: TREM2_nanobody
