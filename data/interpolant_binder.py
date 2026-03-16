@@ -192,6 +192,7 @@ class Interpolant:
             chain_idx=None,
             res_idx=None,
             aatype=None,
+            guidance=None,
         ):
         res_mask = torch.ones(num_batch, num_res, device=self._device)
 
@@ -259,6 +260,21 @@ class Interpolant:
             # Process model output.
             pred_trans_1 = model_out['pred_trans']
             pred_rotmats_1 = model_out['pred_rotmats']
+
+            # Apply interaction guidance (gradient-based steering).
+            # Runs outside no_grad so autograd can compute the score gradient.
+            if guidance is not None and trans_1 is not None:
+                pred_trans_1 = guidance.apply(
+                    pred_trans_1,
+                    pred_rotmats_1,
+                    trans_1,
+                    rotmats_1,
+                    diffuse_mask,
+                    hotspot_mask,
+                    aatype,
+                    float(t_1),
+                )
+
             clean_traj.append(
                 (pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu())
             )
@@ -300,6 +316,17 @@ class Interpolant:
             model_out = model(batch)
         pred_trans_1 = model_out['pred_trans']
         pred_rotmats_1 = model_out['pred_rotmats']
+        if guidance is not None and trans_1 is not None:
+            pred_trans_1 = guidance.apply(
+                pred_trans_1,
+                pred_rotmats_1,
+                trans_1,
+                rotmats_1,
+                diffuse_mask,
+                hotspot_mask,
+                aatype,
+                float(t_1),
+            )
         clean_traj.append(
             (pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu())
         )

@@ -15,6 +15,7 @@ from preprocessing.get_interface_util import (
     get_residue_pairs_within_distance,
 )
 from preprocessing.process_pdb_for_inputs import process_file
+from models.interaction_guidance import build_guidance_from_args
 
 
 class ConfigManager:
@@ -175,6 +176,16 @@ def run_pipeline(args) -> None:
     print("\nInitializing model...")
     exp = Experiment(cfg=cfg)
 
+    # Attach interaction guidance to the flow module if requested
+    guidance = build_guidance_from_args(args)
+    if guidance is not None:
+        exp._module._guidance = guidance
+        print(
+            f"[Guidance] binder_aa={args.guidance_binder_aa}, "
+            f"hotspot_aa={getattr(args, 'guidance_hotspot_aa', None)}, "
+            f"scale={args.guidance_scale}, start_t={args.guidance_start_t}"
+        )
+
     print("\nRunning inference...")
     exp.test()
     print("Sampling finished.")
@@ -274,6 +285,71 @@ def get_parser() -> argparse.ArgumentParser:
         type=str,
         default="test_target",
         help="Name identifier for this run",
+    )
+
+    # ------------------------------------------------------------------
+    # Residue interaction guidance (RL-style gradient steering)
+    # ------------------------------------------------------------------
+    guidance_group = parser.add_argument_group(
+        "Interaction guidance",
+        "Steer the generator so a specific binder residue type interacts "
+        "with hotspot residues.  No retraining required — uses gradient-based "
+        "guidance during the reverse-diffusion trajectory.",
+    )
+    guidance_group.add_argument(
+        "--guidance_binder_aa",
+        type=str,
+        default=None,
+        help=(
+            "1- or 3-letter code of the residue type you want the binder to "
+            "place at the interaction site (e.g. 'ARG' or 'R').  "
+            "Omit to disable guidance."
+        ),
+    )
+    guidance_group.add_argument(
+        "--guidance_hotspot_aa",
+        type=str,
+        default=None,
+        help=(
+            "1- or 3-letter code of the hotspot residue on the target "
+            "(e.g. 'ASP' or 'D').  If omitted, the actual aatype is read "
+            "from the structure and the optimal distance is looked up "
+            "automatically per hotspot."
+        ),
+    )
+    guidance_group.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Strength of the guidance signal.  Larger = stronger steering. "
+            "Typical range: 0.5 – 5.0.  Default: 1.0."
+        ),
+    )
+    guidance_group.add_argument(
+        "--guidance_start_t",
+        type=float,
+        default=0.5,
+        help=(
+            "Time-step fraction at which guidance begins (0–1). "
+            "Guidance applied only for t >= this value. "
+            "0.5 means the second half of the trajectory.  Default: 0.5."
+        ),
+    )
+    guidance_group.add_argument(
+        "--guidance_sigma_d",
+        type=float,
+        default=1.5,
+        help="Width (Å) of the Gaussian distance potential.  Default: 1.5.",
+    )
+    guidance_group.add_argument(
+        "--guidance_ca_cutoff",
+        type=float,
+        default=12.0,
+        help=(
+            "Maximum Cα–Cα distance (Å) for a binder residue to be "
+            "considered 'nearby' a hotspot.  Default: 12.0."
+        ),
     )
 
     return parser

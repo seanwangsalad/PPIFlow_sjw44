@@ -155,6 +155,7 @@ class FlowModule(LightningModule):
             hotspot_mask=batch["hotspot_mask"],
             aatype=batch["aatype"],
             chain_idx=batch["chain_idx"],
+            guidance=getattr(self, "_guidance", None),
         )  # [torch.Size([1, N, 37, 3]), ...num_timesteps..., torch.Size([1, N, 37, 3])]
 
         write_aatype = batch["aatype"] * (1 - batch["diffuse_mask"])
