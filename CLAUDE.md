@@ -43,13 +43,14 @@ All non-trivial helpers imported by `pipeline.py`:
 | `pack_sidechains_dir(input_dir, output_dir, checkpoint)` | Runs FAMPNN sidechain packing on every PDB in input_dir; writes full-atom PDBs to output_dir with PSCE confidence in B-factors |
 
 ## Pipeline Steps & State File
-Six tracked steps written to `<output_dir>/pipeline_state.json`:
+Seven tracked steps written to `<output_dir>/pipeline_state.json`:
 1. `binder_gen` / `nanobody_gen` / etc. – structure sampling
 2. `fixed_positions_csv` – `mpnn_fixed_positions.csv` creation
 3. `protein_mpnn` – ProteinMPNN inverse folding (FASTA output to `mpnn_output/seqs/`)
 4. `fasta_to_csv` – top-5 selection → `mpnn_output/seqsfinal_result.csv`
 5. `graft_sequences` – sequence-grafted PDBs written to `mpnn_output/<name>_<seq_idx>.pdb`
 6. `fampnn` – FAMPNN sidechain packing → `fampnn_designs/<name>_<seq_idx>.pdb`
+7. `af3score` – AF3Score structure scoring → `af3score/af3score_metrics.csv`
 
 ## FAMPNN Sidechain Packing
 - Weights at `fampnn/weights/`; use `fampnn_0_3.pt` (FAMPNN 3.0, recommended for sequence design)
@@ -76,6 +77,23 @@ Six tracked steps written to `<output_dir>/pipeline_state.json`:
 | 0.0 | Antigen non-hotspot / binder chain (binder task) |
 
 Note: in binder outputs, `hotspot_mask + target_interface_mask` can sum to 2.0 on the antigen chain — designed-chain detection therefore requires **both** 4.0 AND 2.0 to be present on the same chain.
+
+## AF3Score
+- Separate package at `/home/seanwang/af3score`; install with `pip install -e /path/to/af3score`
+- Runs after FAMPNN (or raw backbone PDBs if FAMPNN is skipped)
+- Invoked via subprocess with `cwd=af3score_dir` so its internal relative script paths resolve correctly
+- Requires its own Python env if JAX conflicts with PPIFlow env → use `af3score_python` key
+- Output: `<output_dir>/af3score/af3score_metrics.csv`
+- `run_af3score(output_dir, cfg, state)` in `pipeline.py`
+
+## YAML Keys for AF3Score (all `pipeline_*.yaml`)
+| Key | Required | Default |
+|---|---|---|
+| `af3score_dir` | Yes (omit to skip) | – |
+| `af3score_weights` | Yes (when af3score_dir is set) | – |
+| `af3score_python` | No | `sys.executable` |
+| `af3score_num_workers` | No | 4 |
+| `af3score_db_dir` | No (string or list) | – |
 
 ## YAML Keys for ProteinMPNN (all `pipeline_*.yaml`)
 | Key | Required | Default |

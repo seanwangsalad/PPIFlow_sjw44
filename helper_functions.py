@@ -393,7 +393,7 @@ def run_protein_mpnn(output_dir: str, csv_path: str, chain_list: str, cfg: dict)
     print(f"[inverse_folding] Running ProteinMPNN → {out_folder}")
     protein_mpnn_run.main(args)
 
-def mpnn_fasta_to_csv(input_dirs: list, output_csv: str, suffix: str = ".pdb", top_n: int = 5):
+def mpnn_fasta_to_csv(input_dirs: list, output_csv: str, suffix: str = ".pdb", top_n: int = 3):
 
     seen_seqs = set()
     # link_name -> list of (score_float, seq_idx, seq_str)

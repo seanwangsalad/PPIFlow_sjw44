@@ -166,6 +166,114 @@ def run_fampnn(output_dir: str, cfg: dict, state: PipelineState) -> None:
     )
     state.mark_done("fampnn")
 
+def run_af3score(output_dir: str, cfg: dict, state: PipelineState, num_samples: int = 0) -> None:
+    """Run AF3Score on FAMPNN designs (or backbone PDBs if FAMPNN was skipped).
+
+    Required YAML keys:
+        af3score_dir     – path to the af3score repo (must contain af3score_pipeline.py)
+        af3score_weights – path to the AlphaFold3 model weights file
+
+    Optional YAML keys:
+        af3score_python      – Python executable to use (default: sys.executable)
+        af3score_num_workers – worker count for preprocessing (default: 4)
+        af3score_db_dir      – AF3 database dir(s); string or list of strings
+    """
+    if not cfg.get("af3score_dir"):
+        print("[pipeline.py] 'af3score_dir' not set – skipping AF3Score.")
+        return
+    if not cfg.get("af3score_weights"):
+        print("[pipeline.py] 'af3score_weights' not set – skipping AF3Score.")
+        return
+
+    if state.is_done("af3score"):
+        print("[pipeline.py] Skipping af3score (already done).")
+        return
+
+    fampnn_dir = os.path.abspath(os.path.join(output_dir, "fampnn_designs"))
+    if not os.path.isdir(fampnn_dir) or not any(
+        f.endswith(".pdb") for f in os.listdir(fampnn_dir)
+    ):
+        raise FileNotFoundError(
+            f"AF3Score requires FAMPNN output but no PDBs found in {fampnn_dir}. "
+            "Set 'fampnn_weights' in your config and ensure FAMPNN completes first."
+        )
+
+    af3score_output = os.path.abspath(os.path.join(output_dir, "af3score"))
+    af3score_dir = os.path.expanduser(cfg["af3score_dir"])
+    python_exec = cfg.get("af3score_python") or sys.executable
+
+    cmd = [
+        python_exec,
+        "af3score_pipeline.py",
+        "--input", fampnn_dir,
+        "--output_dir", af3score_output,
+        "--weights", cfg["af3score_weights"],
+    ]
+
+    if cfg.get("af3score_num_workers"):
+        cmd += ["--num_workers", str(cfg["af3score_num_workers"])]
+
+    db_dirs = cfg.get("af3score_db_dir", [])
+    if isinstance(db_dirs, str):
+        db_dirs = [db_dirs]
+    for db in db_dirs:
+        cmd += ["--db_dir", db]
+
+    print(f"\n[pipeline.py] Running AF3Score")
+    print(f"[pipeline.py]   input       : {fampnn_dir}")
+    print(f"[pipeline.py]   output      : {af3score_output}")
+    print(f"[pipeline.py]   cwd         : {af3score_dir}")
+    print(f"[pipeline.py]   python      : {python_exec}\n")
+
+    import subprocess
+    subprocess.run(cmd, check=True, cwd=af3score_dir)
+    state.mark_done("af3score")
+
+    # ── Select best models by ipTM ────────────────────────────────────────────
+    first_round_iptm = cfg.get("first_round_iptm")
+    if first_round_iptm is None:
+        print("[pipeline.py] 'first_round_iptm' not set – skipping best-model selection.")
+        return
+
+    import csv, shutil
+
+    metric_csv = os.path.join(af3score_output, "af3score_metrics.csv")
+    if not os.path.isfile(metric_csv):
+        print(f"[pipeline.py] Warning: metrics CSV not found at {metric_csv} – skipping best-model selection.")
+        return
+
+    # Read CSV, filter ipTM > threshold, sort descending, cap at num_samples
+    passing = []
+    with open(metric_csv, newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            try:
+                iptm_val = float(row["iptm"])
+            except (KeyError, ValueError):
+                continue
+            if iptm_val > float(first_round_iptm):
+                passing.append((iptm_val, row["description"]))
+
+    passing.sort(key=lambda x: x[0], reverse=True)
+
+    top = passing[:num_samples] if num_samples > 0 else passing
+
+    best_dir = os.path.join(af3score_output, "best_models")
+    os.makedirs(best_dir, exist_ok=True)
+
+    copied = 0
+    for iptm_val, desc in top:
+        src = os.path.join(fampnn_dir, f"{desc}.pdb")
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(best_dir, f"{desc}.pdb"))
+            copied += 1
+        else:
+            print(f"[pipeline.py] Warning: PDB not found for {desc} – skipping.")
+
+    print(f"\n[pipeline.py] Best models: {copied} PDBs copied to {best_dir}")
+    print(f"[pipeline.py]   threshold : ipTM > {first_round_iptm}")
+    print(f"[pipeline.py]   passing   : {len(passing)} total, kept top {len(top)}")
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -211,6 +319,7 @@ def main() -> None:
 
     inverse_folding(cli_args.output, cfg, state)
     run_fampnn(cli_args.output, cfg, state)
+    run_af3score(cli_args.output, cfg, state, num_samples=cli_args.num_samples)
 
 
 if __name__ == "__main__":

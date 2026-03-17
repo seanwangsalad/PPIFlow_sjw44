@@ -37,3 +37,15 @@ num_seqs_per_target: 8
 batch_size: 8
 sampling_temp: "0.1"
 mpnn_omit_AAs: "C"          # amino acids to exclude (e.g. cysteine)
+
+# ── FAMPNN sidechain packing ──────────────────────────────────────────────────
+# fampnn_weights: /path/to/fampnn/weights/fampnn_0_3.pt
+
+# ── AF3Score (structure-based scoring) ───────────────────────────────────────
+# Leave af3score_dir unset (or remove the key) to skip AF3Score.
+# Install af3score first: pip install -e /path/to/af3score
+# af3score_dir: /path/to/af3score          # repo root (contains af3score_pipeline.py)
+# af3score_weights: /path/to/af3/weights/af3.bin   # AlphaFold3 model weights
+# af3score_python: /path/to/af3score_venv/bin/python  # optional: separate venv
+# af3score_num_workers: 4
+# af3score_db_dir: /path/to/af3/databases

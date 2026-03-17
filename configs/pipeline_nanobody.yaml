@@ -31,6 +31,15 @@ mpnn_omit_AAs: "C"
 
 fampnn_weights: /home/seanwang/PPIFlow_sjw44/fampnn/weights/fampnn_0_3.pt
 
+# ── AF3Score (structure-based scoring) ───────────────────────────────────────
+# Leave af3score_dir unset (or remove the key) to skip AF3Score.
+# Install af3score first: pip install -e /path/to/af3score
+# af3score_dir: /path/to/af3score          # repo root (contains af3score_pipeline.py)
+# af3score_weights: /path/to/af3/weights/af3.bin   # AlphaFold3 model weights
+# af3score_python: /path/to/af3score_venv/bin/python  # optional: separate venv
+# af3score_num_workers: 4
+# af3score_db_dir: /path/to/af3/databases
+# first_round_iptm: 0.6   # copy top-N PDBs with ipTM > this into af3score/best_models/
 
 # ── Run identity ─────────────────────────────────────────────────────────────
 # output_dir and num_samples are passed via --output and --num_samples CLI flags
