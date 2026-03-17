@@ -136,9 +136,9 @@ def inverse_folding(output_dir: str, cfg: dict, state: PipelineState) -> None:
     if state.is_done("protein_mpnn"):
         print("[pipeline.py] Skipping protein_mpnn (already done).")
     else:
-        run_protein_mpnn(output_dir, csv_path, chain_list, cfg)
+        seqs_dirs = run_protein_mpnn(output_dir, csv_path, chain_list, cfg)
         mpnn_fasta_to_csv(
-            input_dirs=[os.path.join(output_dir, "mpnn_output", "seqs")],
+            input_dirs=seqs_dirs,
             output_csv=seqs_csv,
             suffix=".pdb",
         )
@@ -278,6 +278,113 @@ def run_af3score(output_dir: str, cfg: dict, state: PipelineState, num_samples: 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+# FastRelax step
+# ---------------------------------------------------------------------------
+
+def run_fastrelax_interface(output_dir: str, cfg: dict, state: PipelineState) -> None:
+    """Run PyRosetta interface FastRelax on the best AF3Score models.
+
+    Reads PDBs from <output_dir>/af3score/best_models/ and writes relaxed
+    structures to <output_dir>/fastrelax_designs/.
+
+    Required YAML keys:
+        fastrelax_cpus    – number of parallel worker processes (omit to skip)
+        fastrelax_python  – Python executable with PyRosetta installed
+
+    Optional YAML keys:
+        binder_chain / heavy_chain   – chain ID of the designed binder (default: A)
+        fastrelax_score_cutoff       – total score cutoff (default: 5e6)
+    """
+    if not cfg.get("fastrelax_cpus"):
+        print("[pipeline.py] 'fastrelax_cpus' not set – skipping interface FastRelax.")
+        return
+    if not cfg.get("fastrelax_python"):
+        print("[pipeline.py] 'fastrelax_python' not set – skipping interface FastRelax.")
+        return
+
+    if state.is_done("fastrelax"):
+        print("[pipeline.py] Skipping fastrelax (already done).")
+        return
+
+    best_models_dir = os.path.abspath(os.path.join(output_dir, "af3score", "best_models"))
+    if not os.path.isdir(best_models_dir) or not any(
+        f.endswith(".pdb") for f in os.listdir(best_models_dir)
+    ):
+        raise FileNotFoundError(
+            f"FastRelax requires AF3Score best_models but no PDBs found in {best_models_dir}. "
+            "Ensure af3score + first_round_iptm are configured and run first."
+        )
+
+    fastrelax_out = os.path.abspath(os.path.join(output_dir, "af3score", "best_models_relaxed"))
+
+    # -- Detect binder chain from backbone B-factors (reliable source) -------
+    # Backbone PDBs in output_dir still carry the original B-factor encoding
+    # (4.0 = framework, 2.0 = CDR).  FAMPNN overwrites B-factors with PSCE
+    # confidence, so we must NOT read from fampnn_designs/ or best_models/.
+    designed_chains = _detect_designed_chains(output_dir)
+    if designed_chains:
+        # Nanobody / antibody: heavy chain is first designed chain
+        binder_chain = designed_chains[0]
+    else:
+        # Binder task: no 4.0/2.0 encoding; fall back to config key
+        binder_chain = cfg.get("binder_chain") or "A"
+
+    # -- Detect target chain from actual PDB chain list ----------------------
+    # Read chain IDs from the first PDB in best_models and subtract the binder.
+    first_pdb = sorted(
+        f for f in os.listdir(best_models_dir) if f.endswith(".pdb")
+    )[0]
+    all_chains = []
+    with open(os.path.join(best_models_dir, first_pdb)) as fh:
+        for line in fh:
+            if line.startswith("ATOM") and line[21] not in all_chains:
+                all_chains.append(line[21])
+
+    target_chains = [c for c in all_chains if c not in (designed_chains or [binder_chain])]
+    if not target_chains:
+        raise ValueError(
+            f"Could not detect target chain in {first_pdb}. "
+            f"Chains found: {all_chains}, binder: {binder_chain}"
+        )
+    target_chain = target_chains[0]
+
+    script_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "pyrosetta_scripts", "interface_fastrelax.py")
+    )
+    python_exec = cfg["fastrelax_python"]
+    cpus = int(cfg["fastrelax_cpus"])
+
+    maturation_csv = os.path.abspath(os.path.join(output_dir, "af3score", "maturation.csv"))
+
+    cmd = [
+        python_exec, script_path,
+        "--input_dir",      best_models_dir,
+        "--output_dir",     fastrelax_out,
+        "--maturation_csv", maturation_csv,
+        "--binder_chain",   binder_chain,
+        "--target_chain",   target_chain,
+        "--cpus",           str(cpus),
+    ]
+    if cfg.get("fastrelax_score_cutoff"):
+        cmd += ["--score_cutoff", str(cfg["fastrelax_score_cutoff"])]
+    if cfg.get("fastrelax_reu_cutoff"):
+        cmd += ["--reu_cutoff", str(cfg["fastrelax_reu_cutoff"])]
+
+    print(f"\n[pipeline.py] Running interface FastRelax")
+    print(f"[pipeline.py]   input         : {best_models_dir}")
+    print(f"[pipeline.py]   output        : {fastrelax_out}")
+    print(f"[pipeline.py]   maturation csv: {maturation_csv}")
+    print(f"[pipeline.py]   binder        : chain {binder_chain}")
+    print(f"[pipeline.py]   target        : chain {target_chain}")
+    print(f"[pipeline.py]   cpus          : {cpus}")
+    print(f"[pipeline.py]   python        : {python_exec}\n")
+
+    import subprocess
+    subprocess.run(cmd, check=True)
+    state.mark_done("fastrelax")
+
+
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -320,6 +427,7 @@ def main() -> None:
     inverse_folding(cli_args.output, cfg, state)
     run_fampnn(cli_args.output, cfg, state)
     run_af3score(cli_args.output, cfg, state, num_samples=cli_args.num_samples)
+    run_fastrelax_interface(cli_args.output, cfg, state)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,13 @@ Paper: https://doi.org/10.64898/2026.01.19.700484
 - Supported task values: `binder`, `antibody`, `nanobody`, `monomer`, `motif_scaffolding`, `partial_flow_antibody`, `partial_flow_nanobody`, `partial_flow_binder`.
 - All `_build_*_args` builders, MPNN helpers, and `PipelineState` live in `helper_functions.py`.
 
+## Full Pipeline Order (pipeline.py)
+1. `binder_gen` – structure sampling via `module.run_pipeline(args)`
+2. `inverse_folding` – fixed-positions CSV + ProteinMPNN + fasta_to_csv + graft_sequences
+3. `run_fampnn` – sidechain packing on grafted PDBs
+4. `run_af3score` – AF3Score scoring + best_models selection + maturation.csv (via FastRelax)
+5. `run_fastrelax_interface` – PyRosetta interface FastRelax on best_models; maturation.csv written to af3score/
+
 ## helper_functions.py (added by Claude)
 All non-trivial helpers imported by `pipeline.py`:
 
@@ -36,21 +43,40 @@ All non-trivial helpers imported by `pipeline.py`:
 | `_build_partial_antibody_nanobody_args` | Namespace builder for partial flow antibody/nanobody |
 | `_build_partial_binder_args` | Namespace builder for partial flow binder |
 | `create_mpnn_fixed_positions_csv(output_dir)` | Scans PDBs by B-factor, writes `mpnn_fixed_positions.csv` |
-| `_detect_designed_chains(output_dir)` | Returns chain IDs that have both B-factor 4.0 and 2.0 |
-| `run_protein_mpnn(output_dir, csv_path, chain_list, cfg)` | Calls `protein_mpnn_run.main()` directly; output to `<output_dir>/mpnn_output/` |
-| `mpnn_fasta_to_csv(input_dirs, output_csv, suffix, top_n=5)` | Reads FASTA files from MPNN seqs dir; deduplicates; keeps top 5 lowest-score sequences per design; writes `seqsfinal_result.csv` with columns `link_name, seq, seq_idx, score` |
+| `_detect_designed_chains(output_dir)` | Returns chain IDs that have both B-factor 4.0 and 2.0 (backbone PDBs only — FAMPNN overwrites B-factors with PSCE) |
+| `run_protein_mpnn(output_dir, csv_path, chain_list, cfg)` | Calls `protein_mpnn_run.main()` directly; returns list of seqs dirs; supports hydrophobic bias split |
+| `mpnn_fasta_to_csv(input_dirs, output_csv, suffix, top_n=5)` | Reads FASTA files from MPNN seqs dir(s); deduplicates; keeps top 5 lowest-score sequences per design; writes `seqsfinal_result.csv` with columns `link_name, seq, seq_idx, score` |
 | `graft_sequences_to_pdbs(output_dir, csv_path, designed_chains)` | For each row in `seqsfinal_result.csv`, replaces residue names on designed chains in the backbone PDB with the MPNN sequence; writes `mpnn_output/<basename>_<seq_idx>.pdb` |
 | `pack_sidechains_dir(input_dir, output_dir, checkpoint)` | Runs FAMPNN sidechain packing on every PDB in input_dir; writes full-atom PDBs to output_dir with PSCE confidence in B-factors |
 
 ## Pipeline Steps & State File
-Seven tracked steps written to `<output_dir>/pipeline_state.json`:
-1. `binder_gen` / `nanobody_gen` / etc. – structure sampling
+Eight tracked steps written to `<output_dir>/pipeline_state.json`:
+1. `binder_gen` – structure sampling
 2. `fixed_positions_csv` – `mpnn_fixed_positions.csv` creation
-3. `protein_mpnn` – ProteinMPNN inverse folding (FASTA output to `mpnn_output/seqs/`)
-4. `fasta_to_csv` – top-5 selection → `mpnn_output/seqsfinal_result.csv`
-5. `graft_sequences` – sequence-grafted PDBs written to `mpnn_output/<name>_<seq_idx>.pdb`
-6. `fampnn` – FAMPNN sidechain packing → `fampnn_designs/<name>_<seq_idx>.pdb`
-7. `af3score` – AF3Score structure scoring → `af3score/af3score_metrics.csv`
+3. `protein_mpnn` – ProteinMPNN inverse folding + fasta_to_csv + graft_sequences (all in one state block)
+4. `fampnn` – FAMPNN sidechain packing → `fampnn_designs/<name>_<seq_idx>.pdb`
+5. `af3score` – AF3Score scoring → `af3score/af3score_metrics.csv`; best models (ipTM > first_round_iptm, top num_samples) → `af3score/best_models/`
+6. `fastrelax` – PyRosetta interface FastRelax → `af3score/best_models_relaxed/`; maturation candidates (REU < cutoff) → `af3score/maturation.csv`
+
+## Output Directory Layout
+```
+<output_dir>/
+├── *.pdb                        # backbone PDBs (B-factor encoding intact)
+├── pipeline_state.json
+├── mpnn_fixed_positions.csv
+├── mpnn_output/
+│   ├── seqs/                    # FASTA files (normal + biased appended)
+│   ├── hydrophobic_bias.jsonl   # written when mpnn_hydrophobic_bias: true
+│   ├── seqsfinal_result.csv
+│   └── <name>_<seq_idx>.pdb    # grafted backbone PDBs
+├── fampnn_designs/
+│   └── <name>_<seq_idx>.pdb    # full-atom PDBs (B-factor = PSCE confidence)
+└── af3score/
+    ├── af3score_metrics.csv
+    ├── best_models/             # PDBs with ipTM > first_round_iptm (top num_samples)
+    ├── best_models_relaxed/     # FastRelax output
+    └── maturation.csv           # {binder_name: [resnum, ...]} for REU < cutoff
+```
 
 ## FAMPNN Sidechain Packing
 - Weights at `fampnn/weights/`; use `fampnn_0_3.pt` (FAMPNN 3.0, recommended for sequence design)
@@ -67,24 +93,31 @@ Seven tracked steps written to `<output_dir>/pipeline_state.json`:
 - `motif_index` = space-separated 1-based fixed residue indices, `-` separates chains, trailing `-` for single-chain designs.
 - Chain detection: designed chains have B-factor 4.0 (framework) AND 2.0 (CDR); binder case falls back to `binder_chain` from config.
 - `ProteinMPNN/helper_scripts/make_fixed_positions_dict.py` uses `\t` to split the CSV (updated from original `,`).
+- `batch_size` must not exceed `num_seqs_per_target` (or the per-run half when `mpnn_hydrophobic_bias` is on) — raises `ValueError` if violated.
 
-## B-Factor Encoding in Output PDBs
-| Value | Meaning |
-|---|---|
-| 4.0 | Antibody/nanobody framework residues (fixed) |
-| 2.0 | CDR residues (designed) |
-| 1.0 | Antigen hotspot residues |
-| 0.0 | Antigen non-hotspot / binder chain (binder task) |
-
-Note: in binder outputs, `hotspot_mask + target_interface_mask` can sum to 2.0 on the antigen chain — designed-chain detection therefore requires **both** 4.0 AND 2.0 to be present on the same chain.
+## Hydrophobic Bias (ProteinMPNN)
+- Enable with `mpnn_hydrophobic_bias: true` in YAML.
+- Splits `num_seqs_per_target` evenly: `n//2` normal, `n - n//2` biased.
+- Biased run uses `bias_AA_jsonl` with `{W: 1.5, F: 1.5, Y: 1.0, L: 1.0, I: 1.0}` to favor large hydrophobic residues at the interface.
+- Both runs output to the same `mpnn_output/seqs/` — biased FASTAs are appended to normal ones so numbering is continuous.
+- **Constraint**: `batch_size` must be ≤ the per-run sequence count (`num_seqs_per_target // 2` when bias is on).
 
 ## AF3Score
 - Separate package at `/home/seanwang/af3score`; install with `pip install -e /path/to/af3score`
-- Runs after FAMPNN (or raw backbone PDBs if FAMPNN is skipped)
-- Invoked via subprocess with `cwd=af3score_dir` so its internal relative script paths resolve correctly
+- Runs after FAMPNN; requires `fampnn_designs/` to exist with PDBs (no fallback)
+- Invoked via subprocess with `cwd=af3score_dir` so internal relative script paths resolve; input/output paths are made absolute before passing
 - Requires its own Python env if JAX conflicts with PPIFlow env → use `af3score_python` key
-- Output: `<output_dir>/af3score/af3score_metrics.csv`
-- `run_af3score(output_dir, cfg, state)` in `pipeline.py`
+- After scoring: filters `iptm > first_round_iptm`, takes top `num_samples`, copies PDBs to `af3score/best_models/`
+- `run_af3score(output_dir, cfg, state, num_samples)` in `pipeline.py`
+
+## FastRelax (PyRosetta)
+- Script: `pyrosetta_scripts/interface_fastrelax.py`
+- Mirrors `demo_scripts/interface_analysis/codes/native.xml`: neighborhood selector (20 Å around binder interface residues), restrict-to-repacking task ops, FastRelax lbfgs 2 repeats, MoveMap binder bb+chi / target chi-only
+- Interface residues detected via `biopython_utils.hotspot_residues()` (4 Å atom cutoff) → converted to Rosetta pose indices for `ResidueIndexSelector`
+- Post-relax: per-residue interface REU via energy graph; residues with REU < `reu_cutoff` (default -1.0) → `af3score/maturation.csv` as `{binder_name: [resnum, ...]}`
+- Chain detection: binder from `_detect_designed_chains(output_dir)` (backbone B-factors); target from PDB chain list minus designed chains
+- Each PDB runs in a **spawned** worker process (not fork — PyRosetta is not fork-safe)
+- Requires separate Python env with PyRosetta → `fastrelax_python` key
 
 ## YAML Keys for AF3Score (all `pipeline_*.yaml`)
 | Key | Required | Default |
@@ -94,6 +127,7 @@ Note: in binder outputs, `hotspot_mask + target_interface_mask` can sum to 2.0 o
 | `af3score_python` | No | `sys.executable` |
 | `af3score_num_workers` | No | 4 |
 | `af3score_db_dir` | No (string or list) | – |
+| `first_round_iptm` | No (omit to skip best_models selection) | – |
 
 ## YAML Keys for ProteinMPNN (all `pipeline_*.yaml`)
 | Key | Required | Default |
@@ -104,6 +138,26 @@ Note: in binder outputs, `hotspot_mask + target_interface_mask` can sum to 2.0 o
 | `batch_size` | No | `1` |
 | `sampling_temp` | No | `"0.1"` |
 | `mpnn_omit_AAs` | No | `"X"` |
+| `mpnn_hydrophobic_bias` | No | `false` |
+
+## YAML Keys for FastRelax (all `pipeline_*.yaml`)
+| Key | Required | Default |
+|---|---|---|
+| `fastrelax_python` | Yes (omit to skip) | – |
+| `fastrelax_cpus` | Yes (omit to skip) | – |
+| `fastrelax_score_cutoff` | No | `5000000.0` |
+| `fastrelax_reu_cutoff` | No | `-1.0` |
+
+## B-Factor Encoding in Output PDBs
+| Value | Meaning |
+|---|---|
+| 4.0 | Antibody/nanobody framework residues (fixed) |
+| 2.0 | CDR residues (designed) |
+| 1.0 | Antigen hotspot residues |
+| 0.0 | Antigen non-hotspot / binder chain (binder task) |
+
+Note: in binder outputs, `hotspot_mask + target_interface_mask` can sum to 2.0 on the antigen chain — designed-chain detection therefore requires **both** 4.0 AND 2.0 to be present on the same chain.
+FAMPNN overwrites B-factors with PSCE confidence — always use backbone PDBs in `output_dir` for chain detection, never `fampnn_designs/` or `af3score/`.
 
 ## Configs Directory (`configs/`)
 | File | Used by |
@@ -113,7 +167,14 @@ Note: in binder outputs, `hotspot_mask + target_interface_mask` can sum to 2.0 o
 | `inference_nanobody.yaml` | Antibody AND nanobody (same config) |
 | `inference_unconditional.yaml` | Monomer unconditional sampling |
 | `inference_scaffolding.yaml` | Monomer motif scaffolding |
-| `pipeline_*.yaml` | Templates for `pipeline.py` (include MPNN block) |
+| `pipeline_*.yaml` | Templates for `pipeline.py` (include MPNN/FAMPNN/AF3Score/FastRelax blocks) |
+
+## PyRosetta Scripts (`pyrosetta_scripts/`)
+| File | Purpose |
+|---|---|
+| `interface_fastrelax.py` | Parallel interface FastRelax + maturation residue analysis |
+| `biopython_utils.py` | `hotspot_residues()`, `secondary_structure()` |
+| `pyrosetta_utils.py` | `fastrelax()`, `energy_interacting_residues()` — has module-level `pr.init()`, do not import in main process |
 
 ## Key Architecture Pattern
 Every `sample_*.py` follows the same three-step pattern:
