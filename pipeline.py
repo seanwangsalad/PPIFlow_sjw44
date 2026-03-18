@@ -25,6 +25,7 @@ See configs/pipeline_*.yaml for task-specific templates.
 """
 
 import argparse
+import glob
 import os, shutil
 import sys
 import yaml
@@ -37,6 +38,8 @@ from helper_functions import (
     _build_partial_binder_args,
     create_mpnn_fixed_positions_csv,
     _detect_designed_chains,
+    _fixed_motif_for_pdb,
+    write_partial_flow_fixed_positions_csv,
     run_protein_mpnn,
 )
 
@@ -385,6 +388,178 @@ def run_fastrelax_interface(output_dir: str, cfg: dict, state: PipelineState) ->
 
 
 # ---------------------------------------------------------------------------
+# Partial flow refinement
+# ---------------------------------------------------------------------------
+
+def run_partial_flow(output_dir: str, cfg: dict, state: PipelineState, num_samples: int) -> None:
+    """Run partial flow refinement for each family in partial_flow_ready/merged_residues.csv,
+    then run ProteinMPNN on the resulting backbones (with framework + maturation residues fixed),
+    graft sequences, and collect all designs into partial_flow/dump/ with naming:
+        <name>_<family_num>_<pf_idx>_<mpnn_idx>.pdb
+
+    Required YAML key:
+        partial_flow_start_t  – start_t for partial flow (omit to skip); default 0.6 when key present but null
+
+    Output:
+        partial_flow/<family>/  – per-family backbone PDBs + MPNN output
+        partial_flow/dump/      – final named PDBs for all families
+    """
+    if "partial_flow_start_t" not in cfg:
+        print("[pipeline.py] 'partial_flow_start_t' not set – skipping partial flow.")
+        return
+    start_t = cfg["partial_flow_start_t"] if cfg["partial_flow_start_t"] is not None else 0.6
+
+    if state.is_done("partial_flow"):
+        print("[pipeline.py] Skipping partial_flow (already done).")
+        return
+
+    merged_csv = os.path.abspath(
+        os.path.join(output_dir, "af3score", "partial_flow_ready", "merged_residues.csv")
+    )
+    if not os.path.isfile(merged_csv):
+        raise FileNotFoundError(
+            f"Partial flow requires {merged_csv}. "
+            "Ensure fastrelax + first_round_iptm are configured and ran first."
+        )
+
+    # Determine partial flow module from original task
+    task = cfg.get("task", "").lower()
+    if "binder" in task:
+        module = sample_binder_partial
+        partial_task = "partial_flow_binder"
+    elif "nanobody" in task:
+        module = sample_antibody_nanobody_partial
+        partial_task = "partial_flow_nanobody"
+    else:
+        module = sample_antibody_nanobody_partial
+        partial_task = "partial_flow_antibody"
+
+    # Binder chain for residue spec formatting and MPNN
+    designed_chains = _detect_designed_chains(output_dir)
+    binder_chain = designed_chains[0] if designed_chains else cfg.get("binder_chain", "A")
+
+    import csv as _csv, ast as _ast
+
+    with open(merged_csv, newline="") as fh:
+        families = list(_csv.DictReader(fh))
+
+    if not families:
+        print("[pipeline.py] merged_residues.csv is empty – nothing to run.")
+        return
+
+    cfg_name  = cfg.get("name", "design")
+    pf_dir    = os.path.abspath(os.path.join(output_dir, "partial_flow"))
+    dump_dir  = os.path.join(pf_dir, "dump")
+    os.makedirs(dump_dir, exist_ok=True)
+
+    # ── Load original mpnn_fixed_positions.csv → per-family fixed residue sets ─
+    # Maps family name (e.g. "nanobody_3") → set of int residue numbers that were
+    # fixed in the first-round MPNN run.  These are merged into the partial flow
+    # fixed positions so framework residues stay frozen in both passes.
+    orig_family_fixed: dict = {}
+    orig_fixed_csv = os.path.join(output_dir, "mpnn_fixed_positions.csv")
+    if os.path.isfile(orig_fixed_csv):
+        import csv as _csv_orig
+        with open(orig_fixed_csv, newline="") as fh:
+            for row_orig in _csv_orig.DictReader(fh, delimiter="\t"):
+                # pdb_name is the backbone name (e.g. "nanobody_3") which IS the family name.
+                # Do not rsplit — the backbone name maps directly to the family key.
+                pdb_name_orig = str(row_orig["pdb_name"])
+                motif = str(row_orig.get("motif_index", ""))
+                resnums: set = set()
+                for token in motif.replace("-", " ").split():
+                    try:
+                        resnums.add(int(token))
+                    except ValueError:
+                        pass
+                orig_family_fixed.setdefault(pdb_name_orig, set()).update(resnums)
+    else:
+        print(f"[pipeline.py] WARNING: {orig_fixed_csv} not found – original fixed positions will not be merged.")
+
+    print(f"\n[pipeline.py] Partial flow: {len(families)} families, start_t={start_t}")
+
+    # ── Pass 1: run partial flow per family; copy backbones to dump/ ─────────
+    # Accumulate fixed-position rows as we go so we can write one CSV afterward.
+    fixed_rows = []   # {"pdb_name": dump_basename, "motif_index": str}
+
+    for row in families:
+        family   = row["family"]
+        pdb_path = os.path.abspath(row["path"])
+        residues = _ast.literal_eval(row["merged_residues"])
+
+        if not residues:
+            print(f"[pipeline.py] Family {family}: no residues – skipping.")
+            continue
+
+        residue_spec = ",".join(f"{binder_chain}{r}" for r in sorted(residues))
+        family_output = os.path.abspath(os.path.join(pf_dir, family))
+        os.makedirs(family_output, exist_ok=True)
+
+        family_cfg = dict(cfg)
+        family_cfg["start_t"]         = float(start_t)
+        family_cfg["fixed_positions"] = residue_spec
+        family_cfg["name"]            = family
+
+        if partial_task == "partial_flow_binder":
+            family_cfg["input_pdb"] = pdb_path
+        else:
+            family_cfg["complex_pdb"]  = pdb_path
+            family_cfg["cdr_position"] = residue_spec
+
+        print(f"[pipeline.py]   Backbone: {family}: {residue_spec} → {family_output}")
+        args = TASK_MAP[partial_task][1](family_cfg, family_output, num_samples)
+        module.run_pipeline(args)
+
+        # Copy backbones to dump/ with 3-part name; build fixed-position rows
+        family_num    = family.rsplit("_", 1)[-1]
+        pf_backbones  = sorted(glob.glob(os.path.join(family_output, "sample*.pdb")))
+        if not pf_backbones:
+            print(f"[pipeline.py] WARNING: no backbone PDBs in {family_output} – skipping MPNN for {family}.")
+            continue
+
+        for bb_path in pf_backbones:
+            pf_idx       = os.path.splitext(os.path.basename(bb_path))[0].replace("sample", "")
+            dump_basename = f"{cfg_name}_{family_num}_{pf_idx}"
+            dst           = os.path.join(dump_dir, f"{dump_basename}.pdb")
+            shutil.copy2(bb_path, dst)
+
+            orig_fixed = orig_family_fixed.get(family, set())
+            motif_index = _fixed_motif_for_pdb(dst, residues, binder_chain, orig_fixed)
+            fixed_rows.append({"pdb_name": dump_basename, "motif_index": motif_index})
+
+    if not fixed_rows:
+        print("[pipeline.py] No partial flow backbones produced – skipping MPNN.")
+        state.mark_done("partial_flow")
+        return
+
+    # ── Pass 2: write combined fixed-positions CSV at partial_flow/ level ────
+    pf_fixed_csv = os.path.join(pf_dir, "partial_flow_mpnn_fixed_positions.csv")
+    write_partial_flow_fixed_positions_csv(fixed_rows, pf_fixed_csv)
+
+    # ── Pass 3: run MPNN once on all dump/ backbones ──────────────────────────
+    # Use T=0.1 for partial flow MPNN (lower temperature → more conservative sequence design)
+    pf_mpnn_cfg = dict(cfg)
+    pf_mpnn_cfg["sampling_temp"] = "0.1"
+
+    print(f"\n[pipeline.py]   MPNN: {len(fixed_rows)} backbones in {dump_dir} (T=0.1)")
+    pf_seqs_dirs = run_protein_mpnn(dump_dir, pf_fixed_csv, binder_chain, pf_mpnn_cfg)
+
+    pf_seqs_csv = os.path.join(dump_dir, "mpnn_output", "seqsfinal_result.csv")
+    mpnn_fasta_to_csv(input_dirs=pf_seqs_dirs, output_csv=pf_seqs_csv, suffix=".pdb")
+
+    graft_sequences_to_pdbs(
+        output_dir=dump_dir,
+        csv_path=pf_seqs_csv,
+        designed_chains=[binder_chain],
+    )
+    # Grafted PDBs land in dump/mpnn_output/{cfg_name}_{fam}_{pf}_{seq}.pdb
+    # (graft_sequences_to_pdbs already names them {link_base}_{seq_idx}.pdb)
+
+    print(f"\n[pipeline.py] Partial flow designs → {dump_dir}/mpnn_output/")
+    state.mark_done("partial_flow")
+
+
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -428,6 +603,7 @@ def main() -> None:
     run_fampnn(cli_args.output, cfg, state)
     run_af3score(cli_args.output, cfg, state, num_samples=cli_args.num_samples)
     run_fastrelax_interface(cli_args.output, cfg, state)
+    run_partial_flow(cli_args.output, cfg, state, num_samples=cli_args.num_samples)
 
 
 if __name__ == "__main__":

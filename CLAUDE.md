@@ -27,8 +27,9 @@ Paper: https://doi.org/10.64898/2026.01.19.700484
 1. `binder_gen` – structure sampling via `module.run_pipeline(args)`
 2. `inverse_folding` – fixed-positions CSV + ProteinMPNN + fasta_to_csv + graft_sequences
 3. `run_fampnn` – sidechain packing on grafted PDBs
-4. `run_af3score` – AF3Score scoring + best_models selection + maturation.csv (via FastRelax)
-5. `run_fastrelax_interface` – PyRosetta interface FastRelax on best_models; maturation.csv written to af3score/
+4. `run_af3score` – AF3Score scoring + best_models selection
+5. `run_fastrelax_interface` – PyRosetta interface FastRelax on best_models; maturation.csv + partial_flow_ready/ written to af3score/
+6. `run_partial_flow` – partial flow refinement per family using merged maturation residues
 
 ## helper_functions.py (added by Claude)
 All non-trivial helpers imported by `pipeline.py`:
@@ -48,15 +49,18 @@ All non-trivial helpers imported by `pipeline.py`:
 | `mpnn_fasta_to_csv(input_dirs, output_csv, suffix, top_n=5)` | Reads FASTA files from MPNN seqs dir(s); deduplicates; keeps top 5 lowest-score sequences per design; writes `seqsfinal_result.csv` with columns `link_name, seq, seq_idx, score` |
 | `graft_sequences_to_pdbs(output_dir, csv_path, designed_chains)` | For each row in `seqsfinal_result.csv`, replaces residue names on designed chains in the backbone PDB with the MPNN sequence; writes `mpnn_output/<basename>_<seq_idx>.pdb` |
 | `pack_sidechains_dir(input_dir, output_dir, checkpoint)` | Runs FAMPNN sidechain packing on every PDB in input_dir; writes full-atom PDBs to output_dir with PSCE confidence in B-factors |
+| `_fixed_motif_for_pdb(pdb_path, maturation_residues, binder_chain, original_fixed_resnums)` | Returns motif_index string for one partial flow backbone: union of B-factor-1.0 framework, maturation residues, and original fixed positions |
+| `write_partial_flow_fixed_positions_csv(rows, out_path)` | Writes pre-built rows to `partial_flow_mpnn_fixed_positions.csv` (tab-separated, same format as `mpnn_fixed_positions.csv`) |
 
 ## Pipeline Steps & State File
-Eight tracked steps written to `<output_dir>/pipeline_state.json`:
+Seven tracked steps written to `<output_dir>/pipeline_state.json`:
 1. `binder_gen` – structure sampling
 2. `fixed_positions_csv` – `mpnn_fixed_positions.csv` creation
 3. `protein_mpnn` – ProteinMPNN inverse folding + fasta_to_csv + graft_sequences (all in one state block)
 4. `fampnn` – FAMPNN sidechain packing → `fampnn_designs/<name>_<seq_idx>.pdb`
 5. `af3score` – AF3Score scoring → `af3score/af3score_metrics.csv`; best models (ipTM > first_round_iptm, top num_samples) → `af3score/best_models/`
-6. `fastrelax` – PyRosetta interface FastRelax → `af3score/best_models_relaxed/`; maturation candidates (REU < cutoff) → `af3score/maturation.csv`
+6. `fastrelax` – PyRosetta interface FastRelax → `af3score/best_models_relaxed/`; maturation candidates (REU < cutoff) → `af3score/maturation.csv`; family merge → `af3score/partial_flow_ready/`
+7. `partial_flow` – partial flow backbone gen per family + MPNN (T=0.1) on all dump backbones → `partial_flow/dump/mpnn_output/`
 
 ## Output Directory Layout
 ```
@@ -71,11 +75,23 @@ Eight tracked steps written to `<output_dir>/pipeline_state.json`:
 │   └── <name>_<seq_idx>.pdb    # grafted backbone PDBs
 ├── fampnn_designs/
 │   └── <name>_<seq_idx>.pdb    # full-atom PDBs (B-factor = PSCE confidence)
-└── af3score/
-    ├── af3score_metrics.csv
-    ├── best_models/             # PDBs with ipTM > first_round_iptm (top num_samples)
-    ├── best_models_relaxed/     # FastRelax output
-    └── maturation.csv           # {binder_name: [resnum, ...]} for REU < cutoff
+├── af3score/
+│   ├── af3score_metrics.csv
+│   ├── best_models/             # PDBs with ipTM > first_round_iptm (top num_samples)
+│   ├── best_models_relaxed/     # FastRelax output PDBs
+│   ├── maturation.csv           # columns: binder_name, proteinmpnn_family, path, maturation_residues
+│   └── partial_flow_ready/
+│       ├── merged_residues.csv  # columns: family, path, merged_residues
+│       └── <family>.pdb         # representative PDB per family (copy of best_models_relaxed/)
+└── partial_flow/
+    ├── partial_flow_mpnn_fixed_positions.csv  # merged framework+maturation+original fixed positions
+    ├── <family>/                # per-family partial flow backbone PDBs + input/
+    └── dump/
+        ├── <name>_<fam>_<pf>.pdb              # backbone PDBs (3-part name)
+        └── mpnn_output/
+            ├── seqs/
+            ├── seqsfinal_result.csv
+            └── <name>_<fam>_<pf>_<seq>.pdb   # final grafted designs (4-part name)
 ```
 
 ## FAMPNN Sidechain Packing
@@ -148,6 +164,33 @@ Eight tracked steps written to `<output_dir>/pipeline_state.json`:
 | `fastrelax_score_cutoff` | No | `5000000.0` |
 | `fastrelax_reu_cutoff` | No | `-1.0` |
 
+## Partial Flow (run_partial_flow)
+Two-pass implementation:
+
+**Pass 1 – backbone generation (per family):**
+- Reads `af3score/partial_flow_ready/merged_residues.csv`.
+- For each family: formats maturation residues as `"A45,A67,A92"`, calls `sample_antibody_nanobody_partial` or `sample_binder_partial`.
+- Backbone PDBs saved to `partial_flow/<family>/sample{n}.pdb`.
+- Each backbone is copied to `partial_flow/dump/{name}_{fam}_{pf}.pdb` (3-part name).
+- Partial flow B-factor encoding: binder 1.0 = framework, 0.0 = CDR; antigen 2.0 = hotspot, 0.0 = other.
+
+**Pass 2 – ProteinMPNN on all dump backbones (once, after all families):**
+- Builds `partial_flow/partial_flow_mpnn_fixed_positions.csv` — one row per dump backbone.
+- Each row's fixed positions = union of:
+  1. B-factor 1.0 residues on binder chain (partial flow framework)
+  2. Maturation residues for the family (don't redesign good contacts)
+  3. Original fixed positions from `mpnn_fixed_positions.csv` (framework from first-round MPNN; keyed by backbone name = family name directly — no rsplit)
+- Runs MPNN at **T=0.1** (hardcoded, conservative) on `partial_flow/dump/`.
+- Grafted designs → `partial_flow/dump/mpnn_output/{name}_{fam}_{pf}_{seq}.pdb` (4-part name).
+- `retry_Limit` defaults to 10 if not set in YAML.
+- State key: `partial_flow`.
+
+## YAML Keys for Partial Flow (all `pipeline_*.yaml`)
+| Key | Required | Default |
+|---|---|---|
+| `partial_flow_start_t` | No (omit to skip) | `0.6` when key present but null |
+| `retry_Limit` | No | `10` |
+
 ## B-Factor Encoding in Output PDBs
 | Value | Meaning |
 |---|---|
@@ -158,6 +201,14 @@ Eight tracked steps written to `<output_dir>/pipeline_state.json`:
 
 Note: in binder outputs, `hotspot_mask + target_interface_mask` can sum to 2.0 on the antigen chain — designed-chain detection therefore requires **both** 4.0 AND 2.0 to be present on the same chain.
 FAMPNN overwrites B-factors with PSCE confidence — always use backbone PDBs in `output_dir` for chain detection, never `fampnn_designs/` or `af3score/`.
+
+**Partial flow backbone PDBs** use a different encoding (from `flow_module_antibody_partial.py`):
+| Value | Meaning |
+|---|---|
+| 1.0 | Binder framework (structurally fixed) |
+| 0.0 | Binder CDR (designed) |
+| 2.0 | Antigen hotspot |
+| 0.0 | Antigen non-hotspot |
 
 ## Configs Directory (`configs/`)
 | File | Used by |

@@ -166,7 +166,7 @@ def _build_partial_antibody_nanobody_args(cfg: dict, output_dir: str, num_sample
         start_t=cfg["start_t"],
         samples_per_target=num_samples,
         output_dir=output_dir,
-        retry_Limit=cfg.get("retry_Limit"),
+        retry_Limit=cfg.get("retry_Limit", 10),
         config=cfg.get("config"),
         model_weights=cfg["model_weights"],
         name=cfg.get("name"),
@@ -286,6 +286,66 @@ def create_mpnn_fixed_positions_csv(output_dir: str) -> str:
     df = pd.DataFrame(rows, columns=["pdb_name", "motif_index"])
     df.to_csv(out_path, sep="\t", index=False)
     print(f"[inverse_folding] mpnn_fixed_positions.csv → {out_path}  ({len(rows)} entries)")
+    return out_path
+
+
+def _fixed_motif_for_pdb(
+    pdb_path: str,
+    maturation_residues: list,
+    binder_chain: str,
+    original_fixed_resnums: set = None,
+) -> str:
+    """Return the motif_index string for one partial flow backbone PDB.
+
+    Fixed residues = framework (B-factor 1.0 on binder chain)
+                   ∪ maturation residues (good contacts from FastRelax)
+                   ∪ original_fixed_resnums (from mpnn_fixed_positions.csv)
+
+    Partial flow B-factor encoding:
+        Binder chain : 1.0 = framework (fixed),  0.0 = CDR (designed)
+        Antigen chain: 2.0 = hotspot,             0.0 = non-hotspot
+    """
+    maturation_set = set(int(r) for r in maturation_residues)
+    chain_resnums: dict = {}
+    with open(pdb_path) as fh:
+        for line in fh:
+            if not line.startswith("ATOM"):
+                continue
+            chain = line[21]
+            resnum = int(line[22:26])
+            bf = float(line[60:66])
+            prev = chain_resnums.get((chain, resnum), -1.0)
+            chain_resnums[(chain, resnum)] = max(prev, bf)
+
+    framework = {
+        resnum for (chain, resnum), bf in chain_resnums.items()
+        if chain == binder_chain and abs(bf - 1.0) < 0.01
+    }
+    fixed = framework | maturation_set
+    if original_fixed_resnums:
+        fixed |= original_fixed_resnums
+    return " ".join(str(r) for r in sorted(fixed)) + "-"
+
+
+def write_partial_flow_fixed_positions_csv(
+    rows: list,
+    out_path: str,
+) -> str:
+    """Write partial_flow_mpnn_fixed_positions.csv from pre-built rows.
+
+    Args:
+        rows:     List of {"pdb_name": str, "motif_index": str} dicts.
+        out_path: Absolute path to write the CSV (tab-separated).
+
+    Returns:
+        out_path
+    """
+    df = pd.DataFrame(rows, columns=["pdb_name", "motif_index"])
+    df.to_csv(out_path, sep="\t", index=False)
+    print(
+        f"[partial_flow_mpnn] partial_flow_mpnn_fixed_positions.csv → {out_path}"
+        f"  ({len(rows)} entries)"
+    )
     return out_path
 
 

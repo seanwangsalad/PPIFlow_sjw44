@@ -184,7 +184,7 @@ def _relax_one(task):
             maturation_rows.append(binder_resnum)
 
     print(f"[fastrelax] {name}: {len(maturation_rows)} residues with REU < {reu_cutoff}")
-    return (name, maturation_rows)
+    return (name, os.path.abspath(pdb_path), maturation_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -230,24 +230,81 @@ def run(input_dir: str, output_dir: str, binder_chain: str, target_chain: str,
     for result in results:
         if not result:
             continue
-        name, residues = result
-        maturation[name] = residues
+        name, relaxed_path, residues = result
+        maturation[name] = {"path": relaxed_path, "residues": residues}
+
+    def _family(binder_name: str) -> str:
+        """nanobody_3_0_relaxed → nanobody_3"""
+        base = binder_name.removesuffix("_relaxed")
+        return base.rsplit("_", 1)[0]
 
     # Write maturation.csv — one row per binder, residues as a list
     os.makedirs(os.path.dirname(maturation_csv), exist_ok=True)
     with open(maturation_csv, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=["binder_name", "maturation_residues"])
+        writer = csv.DictWriter(
+            fh, fieldnames=["binder_name", "proteinmpnn_family", "path", "maturation_residues"]
+        )
         writer.writeheader()
         for binder_name in sorted(maturation):
             writer.writerow({
-                "binder_name":          binder_name,
-                "maturation_residues":  maturation[binder_name],
+                "binder_name":         binder_name,
+                "proteinmpnn_family":  _family(binder_name),
+                "path":                maturation[binder_name]["path"],
+                "maturation_residues": maturation[binder_name]["residues"],
             })
 
-    total_res = sum(len(v) for v in maturation.values())
+    total_res = sum(len(v["residues"]) for v in maturation.values())
     print(f"\n[fastrelax] Done. Relaxed PDBs written to {output_dir}")
     print(f"[fastrelax] Maturation candidates ({total_res} residues across "
           f"{len(maturation)} designs, REU < {reu_cutoff}) → {maturation_csv}")
+
+    # ── Merge families → partial_flow_ready/ ─────────────────────────────────
+    # For each proteinmpnn_family: union maturation residues across all members,
+    # pick the first member's PDB as the representative structure, copy it to
+    # partial_flow_ready/<family>.pdb.  Chain IDs are preserved from the source
+    # PDB (not renumbered) to stay consistent with the input YAML.
+    import shutil
+
+    partial_flow_dir = os.path.join(os.path.dirname(maturation_csv), "partial_flow_ready")
+    os.makedirs(partial_flow_dir, exist_ok=True)
+
+    # Aggregate per family (insertion order gives us sorted first-member by name)
+    families: dict = {}
+    for binder_name in sorted(maturation):
+        fam = _family(binder_name)
+        if fam not in families:
+            families[fam] = {"path": maturation[binder_name]["path"], "residues": set()}
+        families[fam]["residues"].update(maturation[binder_name]["residues"])
+
+    # Drop families where the merged residue list is empty
+    dead = [fam for fam, data in families.items() if not data["residues"]]
+    for fam in dead:
+        print(f"[fastrelax] Family {fam}: no maturation residues – excluded from partial_flow_ready.")
+        del families[fam]
+
+    # Write merged_residues.csv
+    merged_csv = os.path.join(partial_flow_dir, "merged_residues.csv")
+    with open(merged_csv, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["family", "path", "merged_residues"])
+        writer.writeheader()
+        for fam, data in sorted(families.items()):
+            writer.writerow({
+                "family":           fam,
+                "path":             os.path.join(partial_flow_dir, f"{fam}.pdb"),
+                "merged_residues":  sorted(data["residues"]),
+            })
+
+    # Copy representative PDB for each family
+    for fam, data in families.items():
+        src = data["path"]
+        if not os.path.isfile(src):
+            print(f"[fastrelax] WARNING: {src} not found for family {fam} – skipping.")
+            continue
+        dst = os.path.join(partial_flow_dir, f"{fam}.pdb")
+        shutil.copy2(src, dst)
+        print(f"[fastrelax] Family {fam}: residues {sorted(data['residues'])} → {dst}")
+
+    print(f"[fastrelax] Partial-flow ready: {len(families)} PDBs + merged_residues.csv → {partial_flow_dir}")
 
 
 def main():
@@ -262,7 +319,7 @@ def main():
     parser.add_argument("--cpus",           type=int, default=4, help="Number of parallel worker processes.")
     parser.add_argument("--score_cutoff",   type=float, default=5_000_000.0,
                         help="Discard poses with total_score above this (default: 5e6).")
-    parser.add_argument("--reu_cutoff",     type=float, default=-1.0,
+    parser.add_argument("--reu_cutoff",     type=float, default=-5.0,
                         help="Interface REU threshold for maturation candidates (default: -5.0).")
     args = parser.parse_args()
 
