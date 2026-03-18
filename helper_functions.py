@@ -166,7 +166,7 @@ def _build_partial_antibody_nanobody_args(cfg: dict, output_dir: str, num_sample
         start_t=cfg["start_t"],
         samples_per_target=num_samples,
         output_dir=output_dir,
-        retry_Limit=cfg.get("retry_Limit"),
+        retry_Limit=cfg.get("retry_Limit", 10),
         config=cfg.get("config"),
         model_weights=cfg["model_weights"],
         name=cfg.get("name"),
@@ -289,6 +289,66 @@ def create_mpnn_fixed_positions_csv(output_dir: str) -> str:
     return out_path
 
 
+def _fixed_motif_for_pdb(
+    pdb_path: str,
+    maturation_residues: list,
+    binder_chain: str,
+    original_fixed_resnums: set = None,
+) -> str:
+    """Return the motif_index string for one partial flow backbone PDB.
+
+    Fixed residues = framework (B-factor 1.0 on binder chain)
+                   ∪ maturation residues (good contacts from FastRelax)
+                   ∪ original_fixed_resnums (from mpnn_fixed_positions.csv)
+
+    Partial flow B-factor encoding:
+        Binder chain : 1.0 = framework (fixed),  0.0 = CDR (designed)
+        Antigen chain: 2.0 = hotspot,             0.0 = non-hotspot
+    """
+    maturation_set = set(int(r) for r in maturation_residues)
+    chain_resnums: dict = {}
+    with open(pdb_path) as fh:
+        for line in fh:
+            if not line.startswith("ATOM"):
+                continue
+            chain = line[21]
+            resnum = int(line[22:26])
+            bf = float(line[60:66])
+            prev = chain_resnums.get((chain, resnum), -1.0)
+            chain_resnums[(chain, resnum)] = max(prev, bf)
+
+    framework = {
+        resnum for (chain, resnum), bf in chain_resnums.items()
+        if chain == binder_chain and abs(bf - 1.0) < 0.01
+    }
+    fixed = framework | maturation_set
+    if original_fixed_resnums:
+        fixed |= original_fixed_resnums
+    return " ".join(str(r) for r in sorted(fixed)) + "-"
+
+
+def write_partial_flow_fixed_positions_csv(
+    rows: list,
+    out_path: str,
+) -> str:
+    """Write partial_flow_mpnn_fixed_positions.csv from pre-built rows.
+
+    Args:
+        rows:     List of {"pdb_name": str, "motif_index": str} dicts.
+        out_path: Absolute path to write the CSV (tab-separated).
+
+    Returns:
+        out_path
+    """
+    df = pd.DataFrame(rows, columns=["pdb_name", "motif_index"])
+    df.to_csv(out_path, sep="\t", index=False)
+    print(
+        f"[partial_flow_mpnn] partial_flow_mpnn_fixed_positions.csv → {out_path}"
+        f"  ({len(rows)} entries)"
+    )
+    return out_path
+
+
 def _detect_designed_chains(output_dir: str) -> list[str]:
     """Return the designed chain IDs from the first PDB in output_dir.
 
@@ -318,10 +378,12 @@ def _detect_designed_chains(output_dir: str) -> list[str]:
     ]
 
 
-def run_protein_mpnn(output_dir: str, csv_path: str, chain_list: str, cfg: dict) -> None:
+def run_protein_mpnn(output_dir: str, csv_path: str, chain_list: str, cfg: dict) -> list:
     """Run ProteinMPNN inverse folding on all PDBs in output_dir.
 
-    Sequences are written to <output_dir>/mpnn_output/.
+    When ``mpnn_hydrophobic_bias`` is set in cfg, sequences are split evenly
+    between a normal run and a run biased toward large hydrophobic residues
+    (W, F, Y, L, I) to enhance interface interactions.
 
     Args:
         output_dir:  Folder containing the generated backbone PDB files.
@@ -331,9 +393,15 @@ def run_protein_mpnn(output_dir: str, csv_path: str, chain_list: str, cfg: dict)
                      ``"A B"``.
         cfg:         Pipeline config dict; must contain ``mpnn_weights`` and
                      may contain ``model_name``, ``num_seqs_per_target``,
-                     ``batch_size``, ``sampling_temp``, ``mpnn_omit_AAs``.
+                     ``batch_size``, ``sampling_temp``, ``mpnn_omit_AAs``,
+                     ``mpnn_hydrophobic_bias``.
+
+    Returns:
+        List of seqs subdirectory paths that contain the output FASTA files.
+        Normally ``[mpnn_output/seqs]``; two dirs when hydrophobic bias is on.
     """
     import sys
+    import json as _json
     from argparse import Namespace as _Namespace
 
     # Put the ProteinMPNN directory on sys.path so its relative imports resolve
@@ -346,54 +414,100 @@ def run_protein_mpnn(output_dir: str, csv_path: str, chain_list: str, cfg: dict)
     out_folder = os.path.join(output_dir, "mpnn_output")
     os.makedirs(out_folder, exist_ok=True)
 
-    args = _Namespace(
-        # ── paths ──────────────────────────────────────────────────────────────
-        folder_with_pdbs_path=output_dir,
-        out_folder=out_folder,
-        path_to_model_weights=cfg["mpnn_weights"],
-        # ── design spec ────────────────────────────────────────────────────────
-        chain_list=chain_list,
-        position_list=csv_path,
-        model_name=cfg.get("model_name", "v_48_020"),
-        # ── sampling ───────────────────────────────────────────────────────────
-        num_seq_per_target=int(cfg.get("num_seqs_per_target", 8)),
-        batch_size=int(cfg.get("batch_size", 1)),
-        sampling_temp=str(cfg.get("sampling_temp", "0.1")),
-        omit_AAs=cfg.get("mpnn_omit_AAs", "X"),
-        # ── unused / defaults ──────────────────────────────────────────────────
-        suppress_print=0,
-        ca_only=False,
-        use_soluble_model=False,
-        seed=0,
-        backbone_noise=0.00,
-        max_length=200000,
-        save_score=0,
-        save_probs=0,
-        score_only=0,
-        path_to_fasta="",
-        conditional_probs_only=0,
-        conditional_probs_only_backbone=0,
-        unconditional_probs_only=0,
-        pdb_path="",
-        pdb_path_chains="",
-        jsonl_path="",
-        chain_id_jsonl="",
-        fixed_positions_jsonl="",
-        bias_AA_jsonl="",
-        bias_by_res_jsonl="",
-        omit_AA_jsonl="",
-        pssm_jsonl="",
-        pssm_multi=0.0,
-        pssm_threshold=0.0,
-        pssm_log_odds_flag=0,
-        pssm_bias_flag=0,
-        tied_positions_jsonl="",
-    )
+    total_seqs = int(cfg.get("num_seqs_per_target", 8))
+    hydrophobic_bias = cfg.get("mpnn_hydrophobic_bias", False)
 
-    print(f"[inverse_folding] Running ProteinMPNN → {out_folder}")
-    protein_mpnn_run.main(args)
+    # Split sequence budget when hydrophobic bias is requested
+    n_normal  = total_seqs // 2 if hydrophobic_bias else total_seqs
+    n_biased  = total_seqs - n_normal  # ceiling half
 
-def mpnn_fasta_to_csv(input_dirs: list, output_csv: str, suffix: str = ".pdb", top_n: int = 5):
+    def _base_args(out_folder, n_seqs, bias_jsonl=""):
+        return _Namespace(
+            folder_with_pdbs_path=output_dir,
+            out_folder=out_folder,
+            path_to_model_weights=cfg["mpnn_weights"],
+            chain_list=chain_list,
+            position_list=csv_path,
+            model_name=cfg.get("model_name", "v_48_020"),
+            num_seq_per_target=n_seqs,
+            batch_size=batch_size,
+            sampling_temp=str(cfg.get("sampling_temp", "0.1")),
+            omit_AAs=cfg.get("mpnn_omit_AAs", "X"),
+            suppress_print=0,
+            ca_only=False,
+            use_soluble_model=False,
+            seed=0,
+            backbone_noise=0.00,
+            max_length=200000,
+            save_score=0,
+            save_probs=0,
+            score_only=0,
+            path_to_fasta="",
+            conditional_probs_only=0,
+            conditional_probs_only_backbone=0,
+            unconditional_probs_only=0,
+            pdb_path="",
+            pdb_path_chains="",
+            jsonl_path="",
+            chain_id_jsonl="",
+            fixed_positions_jsonl="",
+            bias_AA_jsonl=bias_jsonl,
+            bias_by_res_jsonl="",
+            omit_AA_jsonl="",
+            pssm_jsonl="",
+            pssm_multi=0.0,
+            pssm_threshold=0.0,
+            pssm_log_odds_flag=0,
+            pssm_bias_flag=0,
+            tied_positions_jsonl="",
+        )
+
+    batch_size = int(cfg.get("batch_size", 1))
+    if batch_size > n_normal:
+        raise ValueError(
+            f"batch_size ({batch_size}) cannot exceed the number of sequences per run "
+            f"({n_normal}). With mpnn_hydrophobic_bias enabled and num_seqs_per_target="
+            f"{total_seqs}, each half gets {n_normal} seq(s). "
+            f"Set batch_size <= {n_normal} in your config."
+        )
+
+    seqs_dir = os.path.join(out_folder, "seqs")
+
+    # ── Normal run ────────────────────────────────────────────────────────────
+    print(f"[inverse_folding] Running ProteinMPNN (normal, {n_normal} seqs) → {out_folder}")
+    protein_mpnn_run.main(_base_args(out_folder, n_normal))
+
+    # ── Hydrophobic-biased run ────────────────────────────────────────────────
+    if hydrophobic_bias:
+        import shutil
+
+        # Large side-chain residues that enhance hydrophobic interface packing
+        bias_dict = {"W": 1.5, "F": 1.5, "Y": 1.0, "L": 1.0, "I": 1.0}
+        bias_jsonl_path = os.path.join(out_folder, "hydrophobic_bias.jsonl")
+        with open(bias_jsonl_path, "w") as fh:
+            fh.write(_json.dumps(bias_dict) + "\n")
+
+        tmp_folder = out_folder + "_biased_tmp"
+        print(f"[inverse_folding] Running ProteinMPNN (hydrophobic bias {bias_dict}, "
+              f"{n_biased} seqs)")
+        protein_mpnn_run.main(_base_args(tmp_folder, n_biased, bias_jsonl_path))
+
+        # Append biased FASTA entries into the normal seqs files so numbering
+        # is continuous and everything lives in a single directory
+        biased_seqs_dir = os.path.join(tmp_folder, "seqs")
+        for fname in os.listdir(biased_seqs_dir):
+            if not fname.endswith((".fa", ".fasta")):
+                continue
+            with open(os.path.join(biased_seqs_dir, fname)) as fh:
+                biased_content = fh.read()
+            with open(os.path.join(seqs_dir, fname), "a") as fh:
+                fh.write(biased_content)
+
+        shutil.rmtree(tmp_folder)
+
+    return [seqs_dir]
+
+def mpnn_fasta_to_csv(input_dirs: list, output_csv: str, suffix: str = ".pdb", top_n: int = 3):
 
     seen_seqs = set()
     # link_name -> list of (score_float, seq_idx, seq_str)
