@@ -105,7 +105,7 @@ def preprocess_csv_and_pkl(pdb_path, output_dir, args) -> str:
         ]
         input_info["chain1_residues"] = hotspot_residues
         input_info["chain1_id"] = args.target_chain
-        pass
+        input_info["chain2_id"] = args.binder_chain
     else:
         print(
             "hotspots not specified, generate hotspots according to known binder interface..."

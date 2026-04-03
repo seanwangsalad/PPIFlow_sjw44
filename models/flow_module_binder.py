@@ -183,6 +183,11 @@ class FlowModule(LightningModule):
                 # Write out sample to PDB file
                 target_name = batch["pdb_name"][i]
                 final_pos = samples[i]
+                target_chain_int = du.chain_str_to_int(batch["target_id"][i])
+                binder_chain_int = du.chain_str_to_int(batch["binder_id"][i])
+                chain_idx_out = batch["chain_idx"][i].clone()
+                chain_idx_out[chain_idx_out == 0] = target_chain_int
+                chain_idx_out[chain_idx_out == 1] = binder_chain_int
                 saved_path = au.write_prot_to_pdb(
                     final_pos,
                     os.path.join(
@@ -190,11 +195,9 @@ class FlowModule(LightningModule):
                         f"{target_name}_{sample_ids[i].item()}.pdb",
                     ),
                     no_indexing=True,
-                    chain_index=batch["chain_idx"][i],
+                    chain_index=chain_idx_out,
                     aatype=write_aatype[i],
                     b_factors=b_factors,
-                    binder=True,
-                    # hotspot,target_interface mask. 1:hotspot, 2:target_interface
                 )
 
                 # Write sample motif location

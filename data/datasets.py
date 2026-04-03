@@ -732,7 +732,9 @@ class PpiTestDataset(BaseDataset):
             'sample_ids': sample_ids,
             'res_mask': res_mask,
             'chain_idx': chain_idx,
-            'target_interface_mask': target_interface_mask
+            'target_interface_mask': target_interface_mask,
+            'target_id': csv_row['target_id'],
+            'binder_id': csv_row['binder_id'],
         }
         return output_feats
 
@@ -880,7 +882,9 @@ class PpiScaffoldingTestDataset(BaseDataset):
             'res_mask': res_mask,
             'chain_idx': chain_idx,
             'target_interface_mask': target_interface_mask,
-            'binder_motif_mask' : binder_motif_mask
+            'binder_motif_mask': binder_motif_mask,
+            'target_id': csv_row['target_id'],
+            'binder_id': csv_row['binder_id'],
         }
         output_feats = self.post_process_feats(output_feats)
         return output_feats

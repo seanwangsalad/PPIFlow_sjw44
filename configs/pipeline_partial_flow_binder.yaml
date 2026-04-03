@@ -1,7 +1,8 @@
 # PPIFlow Pipeline Config – Partial Flow (Binder Refinement)
 # Run with: python pipeline.py --config configs/pipeline_partial_flow_binder.yaml --output /path/to/out --num_samples 5
 #
-# Locally redesigns fixed motif positions of an existing binder-target complex.
+# Generates refined backbone PDBs only. Inverse folding and downstream steps
+# are handled by barbarossa.
 
 task: partial_flow_binder
 
@@ -18,7 +19,7 @@ fixed_positions: "A98-109"
 
 # ── Hotspots (optional) ──────────────────────────────────────────────────────
 specified_hotspots: "B119,B141"
-# interface_dist: 6.0   # Å distance used to auto-detect interface (default 6.0)
+# interface_dist: 6.0
 
 # ── Partial-flow control ─────────────────────────────────────────────────────
 start_t: 0.7              # 0.0–1.0; higher = more structure preserved
@@ -28,14 +29,4 @@ config: /path/to/configs/inference_binder_partial.yaml
 model_weights: /path/to/model/binder.ckpt
 
 # ── Run identity ─────────────────────────────────────────────────────────────
-# output_dir and num_samples are passed via --output and --num_samples CLI flags
 name: my_binder_refinement
-
-# ── ProteinMPNN (inverse folding) ────────────────────────────────────────────
-# Leave mpnn_weights unset (or remove the key) to skip inverse folding.
-mpnn_weights: /path/to/ProteinMPNN/model_weights
-model_name: v_48_020
-num_seqs_per_target: 8
-batch_size: 8
-sampling_temp: "0.1"
-mpnn_omit_AAs: "C"
