@@ -2,3 +2,5 @@ weights/
 weights.zip
 fampnn/weights/
 __pycache__/
+.claude
+.cache

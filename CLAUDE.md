@@ -1,4 +1,37 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # PPIFlow – Codebase Notes for Claude
+
+## Commands
+
+```bash
+# Environment
+conda activate ppiflow
+
+# Run any task via pipeline (recommended)
+python pipeline.py --config configs/pipeline_nanobody.yaml --output /path/to/output --num_samples 5
+
+# Resume a previous run (skips completed steps)
+python pipeline.py --config configs/pipeline_nanobody.yaml --output /path/to/output --num_samples 5 --resume
+
+# Run scripts directly (bypasses pipeline.py)
+python scripts/sample_binder.py \
+    --input_pdb /path/to/target.pdb \
+    --target_chain B --binder_chain A \
+    --config configs/inference_binder.yaml \
+    --model_weights weights/binder.ckpt \
+    --output_dir /path/to/output --name myrun --samples_per_target 5
+```
+
+No formal test suite. The `test/` directory contains example output runs, not executable tests.
+
+## Scope Notice
+
+**Only initial structure generation and partial flow tasks are supported.** All other modules (ProteinMPNN, FAMPNN, downstream scoring, etc.) are not supported and will be removed in a future cleanup.
+
+Supported tasks: `binder`, `antibody`, `nanobody`, `monomer`, `motif_scaffolding`, `partial_flow_ab`, `partial_flow_binder`.
 
 ## Project Overview
 Flow-matching framework for de novo protein binder / antibody / nanobody backbone generation.
@@ -21,8 +54,7 @@ affinity maturation are handled downstream by **barbarossa** (`../barbarossa`).
 ## pipeline.py
 - CLI: `python pipeline.py --config <yaml> --output <dir> --num_samples <n> [--resume]`
 - Reads `task:` field from YAML, builds an `argparse.Namespace`, imports the matching module, calls `module.run_pipeline(args)`.
-- Single step: `binder_gen`. Marks it done in `pipeline_state.json` and exits.
-- `--resume` skips `binder_gen` if already marked done.
+- `--resume` scans the output directory for existing `{name}_{int}.pdb` files and continues from where generation stopped.
 
 ### Supported task values
 
@@ -43,7 +75,6 @@ Minimal shared utilities imported by `pipeline.py`.
 
 | Symbol | Purpose |
 |---|---|
-| `PipelineState` | Reads/writes `pipeline_state.json`; `is_done(step)` / `mark_done(step)` |
 | `_require(cfg, *keys)` | Raises clear error if YAML keys are missing |
 | `_build_binder_args` | Namespace builder for binder task |
 | `_build_antibody_nanobody_args` | Namespace builder for antibody/nanobody |
@@ -51,11 +82,14 @@ Minimal shared utilities imported by `pipeline.py`.
 | `_build_partial_antibody_nanobody_args` | Namespace builder for partial_flow_ab |
 | `_build_partial_binder_args` | Namespace builder for partial_flow_binder |
 
+Notes:
+- There is no longer a `PipelineState` abstraction or `pipeline_state.json`; resume behavior is implemented only for binder and antibody/nanobody generation via output PDB filename counting.
+- `pipeline.py` only calls `validate_inputs(args)` when the target script defines it. In the current tree, `scripts/sample_binder.py` and `scripts/sample_monomer.py` define it; the partial-flow and antibody/nanobody generation scripts do not.
+
 ## Output
 ```
 <output_dir>/
-├── *.pdb                  # backbone PDBs (B-factor encoded)
-└── pipeline_state.json
+└── *.pdb                  # backbone PDBs (B-factor encoded)
 ```
 
 Only backbone PDBs are generated. No MPNN, FAMPNN, AF3Score, or FastRelax output.
@@ -100,6 +134,7 @@ Note: in binder outputs, `hotspot_mask + target_interface_mask` can sum to 2.0 o
 | `pipeline_binder.yaml` | Template for binder task |
 | `pipeline_antibody.yaml` | Template for antibody task |
 | `pipeline_nanobody.yaml` | Template for nanobody task |
+| `pipeline_monomer.yaml` | Template for monomer / motif_scaffolding |
 | `pipeline_partial_flow_antibody.yaml` | Template for partial_flow_ab task |
 | `pipeline_partial_flow_binder.yaml` | Template for partial_flow_binder task |
 
@@ -130,8 +165,15 @@ Note: in binder outputs, `hotspot_mask + target_interface_mask` can sum to 2.0 o
 | Key | Required | Notes |
 |---|---|---|
 | `antigen_pdb` | Yes (gen only) | Antigen structure |
-| `framework_pdb` | Yes (gen only) | Antibody/nanobody framework |
+| `scaffold_pdb` | Yes¹ (gen only) | Complete scaffold PDB (all residues present); use with `scaffold_redesign_residues` + `scaffold_redesign_lengths` |
+| `scaffold_redesign_residues` | Yes¹ (gen only) | Inclusive residue ranges to redesign, e.g. `[[26,33],[51,57],[96,110]]` |
+| `scaffold_redesign_lengths` | Yes¹ (gen only) | `[min,max]` length per region, e.g. `[[8,8],[8,8],[9,21]]` |
+| `scaffold_redesign_chains` | No (gen only) | Scaffold chain ID per region, e.g. `[A,A,A,B,B,B]`. Omit for nanobody — defaults to the scaffold's first chain. Required for antibody when redesign regions span both chains. |
+| `framework_pdb` | Yes² (gen only) | Pre-trimmed framework PDB (legacy; CDR loops already removed, gaps present) |
 | `complex_pdb` | Yes (partial only) | Full antibody-antigen complex PDB |
+¹ Scaffold mode: provide `scaffold_pdb` + `scaffold_redesign_residues` + `scaffold_redesign_lengths` (pipeline trims internally).
+² Legacy mode: provide pre-trimmed `framework_pdb` + `cdr_length` string.
+
 | `antigen_chain` | Yes | Chain ID of antigen |
 | `heavy_chain` | Yes | Chain ID of heavy chain |
 | `light_chain` | No | Omit for nanobody mode |
@@ -170,6 +212,21 @@ Chain prefix on every residue is required and must match `antigen_chain`.
 - Lower → more stochastic redesign
 - Why `partial_flow_ab` and `partial_flow_binder` are separate: different `Experiment` classes (`inference_antibody_partial` vs `inference_binder_partial`), different preprocessing pipelines, different config structures.
 
+## Scaffold Mode Chain Handling (`sample_antibody_nanobody.py`)
+
+`_build_redesigned_scaffold` and `_generate_framework_reference` both:
+- Read the scaffold's **actual chain IDs** from the PDB (not from the YAML)
+- Remap to user-specified chain IDs in the output: scaffold chain → `heavy_chain` (nanobody: all chains; antibody: first scaffold chain → heavy, second → light)
+- Use `scaffold_redesign_chains` as **scaffold chain IDs** (not output chain IDs) when matching redesign regions
+
+This means `heavy_chain: B` with a scaffold that has chain `A` works correctly — the output PDB uses chain `B` as specified.
+
+The preprocessing CSV (`{name}_input.csv`) is deleted at the start of each non-resume run to prevent stale rows from accumulating across failed runs.
+
+The framework reference PDB (`{name}_framework_ref.pdb`) is written to `<output_dir>/input/` alongside the PKL files and CSV.
+
+`calc_rmsd` in `analysis/antibody_metric.py` returns `inf` (instead of raising) when CA atom counts differ between filtered output and framework reference. This is a known edge case where 1–2 framework residues with near-zero normalized coordinates are excluded from the output PDB by the `atom37_mask` threshold.
+
 ## Key Architecture Pattern
 Every `sample_*.py` follows the same three-step pattern:
 1. **Preprocess** – PDB → `.pkl` feature files + CSV manifest
@@ -184,7 +241,4 @@ Download from Google Drive (see README). Four checkpoints:
 `demo_vhh.ipynb` – end-to-end VHH pipeline (backbone gen → sequence design → affinity eval).
 
 ## Downstream Processing
-After generating backbone PDBs, hand off to **barbarossa** (`../barbarossa`):
-- `inverse_folding.py` – mpnn-caliby wrapper (sequence design)
-- `interface_affinity_merger.py` – PyRosetta FastRelax + best residue analysis + family merging
-- `af3score_wrapper.py` – AF3Score structure confidence scoring
+After generating backbone PDBs, hand off to **barbarossa** (`../barbarossa`) for sequence design, scoring, and affinity maturation.

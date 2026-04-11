@@ -3,6 +3,7 @@ Backbone Structure Sampling Pipeline - Binder Design
 """
 
 import os
+import re
 import shutil
 import argparse
 from typing import Dict, Any, Optional
@@ -117,6 +118,14 @@ def preprocess_csv_and_pkl(pdb_path: str, output_dir: str, args) -> str:
     return csv_path
 
 
+def _count_existing_samples(output_dir: str, name: str) -> int:
+    """Count PDB files already written to output_dir matching {name}_{int}.pdb."""
+    pattern = re.compile(rf"^{re.escape(name)}_(\d+)\.pdb$")
+    if not os.path.isdir(output_dir):
+        return 0
+    return sum(1 for f in os.listdir(output_dir) if pattern.match(f))
+
+
 def run_pipeline(args) -> None:
     """Execute the complete sampling pipeline.
 
@@ -125,6 +134,18 @@ def run_pipeline(args) -> None:
     """
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
+
+    start_sample_id = 0
+    remaining = args.samples_per_target
+    if getattr(args, 'resume', False):
+        already_done = _count_existing_samples(output_dir, args.name)
+        if already_done >= args.samples_per_target:
+            print(f"[resume] All {args.samples_per_target} samples already generated. Nothing to do.")
+            return
+        if already_done > 0:
+            start_sample_id = already_done
+            remaining = args.samples_per_target - already_done
+            print(f"[resume] Found {already_done} existing samples; generating {remaining} more (ids {start_sample_id}–{args.samples_per_target - 1}).")
 
     # Preprocessing: generate CSV from PDB or use provided CSV
     if args.input_pdb is not None:
@@ -151,7 +172,8 @@ def run_pipeline(args) -> None:
             "test_csv_path": processed_csv_path,
             "samples_min_length": args.samples_min_length,
             "samples_max_length": args.samples_max_length,
-            "samples_per_target": args.samples_per_target,
+            "samples_per_target": remaining,
+            "start_sample_id": start_sample_id,
             "define_hotspots": args.specified_hotspots is not None,
             "min_hotspot_ratio": args.sample_hotspot_rate_min,
             "max_hotspot_ratio": args.sample_hotspot_rate_max,
@@ -274,6 +296,12 @@ def get_parser() -> argparse.ArgumentParser:
         type=str,
         default="test_target",
         help="Name identifier for this run",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help="Resume generation, skipping samples already written to output_dir.",
     )
 
     return parser

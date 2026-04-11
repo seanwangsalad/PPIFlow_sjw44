@@ -28,7 +28,6 @@ import sys
 import yaml
 
 from helper_functions import (
-    PipelineState,
     _build_binder_args,
     _build_antibody_nanobody_args,
     _build_monomer_args,
@@ -83,22 +82,19 @@ def main() -> None:
     parser.add_argument("--num_samples", type=int, default=5,
                         help="Number of samples to generate (default: 5).")
     parser.add_argument("--resume",      action="store_true", default=False,
-                        help="Resume a previous run, skipping already-completed steps.")
+                        help="Resume a previous run, skipping samples already written to output.")
     cli_args = parser.parse_args()
 
-    cfg   = load_pipeline_config(cli_args.config)
-    task  = cfg["task"].strip().lower()
-    state = PipelineState(cli_args.output, cfg, resume=cli_args.resume)
+    cfg  = load_pipeline_config(cli_args.config)
+    task = cfg["task"].strip().lower()
 
     if task not in TASK_MAP:
         raise ValueError(f"Unknown task '{task}'. Valid options: {', '.join(TASK_MAP)}")
 
-    if state.is_done("binder_gen"):
-        print("[pipeline.py] Skipping binder_gen (already done).")
-        return
-
     module, args_builder = TASK_MAP[task]
-    args = args_builder(cfg, cli_args.output, cli_args.num_samples)
+    import inspect
+    builder_kwargs = {"resume": cli_args.resume} if "resume" in inspect.signature(args_builder).parameters else {}
+    args = args_builder(cfg, cli_args.output, cli_args.num_samples, **builder_kwargs)
 
     if hasattr(module, "validate_inputs"):
         module.validate_inputs(args)
@@ -109,7 +105,6 @@ def main() -> None:
     print(f"[pipeline.py] Num samples: {cli_args.num_samples}\n")
 
     module.run_pipeline(args)
-    state.mark_done("binder_gen")
 
 
 if __name__ == "__main__":

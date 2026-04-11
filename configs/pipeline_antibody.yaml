@@ -8,14 +8,23 @@ task: antibody
 
 # ── Inputs ───────────────────────────────────────────────────────────────────
 antigen_pdb: /path/to/antigen.pdb
-framework_pdb: /path/to/antibody_framework.pdb
+
+# Scaffold mode (preferred): provide the complete scaffold and specify
+# which residue ranges to redesign and their target lengths.
+scaffold_pdb: /path/to/antibody_scaffold.pdb
+scaffold_redesign_residues: [[26,33],[51,57],[96,110],[26,33],[51,53],[89,97]]
+scaffold_redesign_lengths:  [[8,8],[8,8],[10,20],[6,9],[3,3],[9,11]]
+scaffold_redesign_chains:   [A, A, A, B, B, B]
+
+# Legacy mode (uncomment to use instead of scaffold mode):
+# framework_pdb: /path/to/antibody_framework.pdb
+# cdr_length: "CDRH1,8-8,CDRH2,8-8,CDRH3,10-20,CDRL1,6-9,CDRL2,3-3,CDRL3,9-11"
 
 antigen_chain: C
 heavy_chain: A
 light_chain: B            # remove or set to null for nanobody mode
 
 specified_hotspots: "C11,C14,C15,C101,C107,C108"
-cdr_length: "CDRH1,8-8,CDRH2,8-8,CDRH3,10-20,CDRL1,6-9,CDRL2,3-3,CDRL3,9-11"
 
 # ── Model ────────────────────────────────────────────────────────────────────
 config: /path/to/configs/inference_nanobody.yaml

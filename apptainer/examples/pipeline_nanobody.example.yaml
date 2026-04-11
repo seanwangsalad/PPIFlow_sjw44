@@ -1,0 +1,10 @@
+task: nanobody
+antigen_pdb: /workspace/apptainer/examples/demo_inputs/antigen_example.pdb
+framework_pdb: /workspace/Framework/8z8v_nanobody_framework.pdb
+antigen_chain: C
+heavy_chain: A
+specified_hotspots: "C101,C135,C171,C198"
+cdr_length: "CDRH1,8-8,CDRH2,8-8,CDRH3,9-21"
+config: /workspace/configs/inference_nanobody.yaml
+model_weights: /checkpoints/nanobody.ckpt
+name: nanobody_demo

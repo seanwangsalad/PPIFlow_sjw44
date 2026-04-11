@@ -8,14 +8,22 @@ task: nanobody
 
 # ── Inputs ───────────────────────────────────────────────────────────────────
 antigen_pdb: ./TREM2_C_renum.pdb
-framework_pdb: ./7xl0_nanobody_framework.pdb
+
+# Scaffold mode (preferred): provide the complete scaffold and specify
+# which residue ranges to redesign and their target lengths.
+scaffold_pdb: ./7xl0_nanobody.pdb
+scaffold_redesign_residues: [[26,33],[51,57],[96,110]]
+scaffold_redesign_lengths:  [[8,8],[8,8],[9,21]]
+
+# Legacy mode (uncomment to use instead of scaffold mode):
+# framework_pdb: ./7xl0_nanobody_framework.pdb
+# cdr_length: "CDRH1,8-8,CDRH2,8-8,CDRH3,9-21"
 
 antigen_chain: C
 heavy_chain: A
 # light_chain: omitted → nanobody mode
 
 specified_hotspots: "C31,C63,C78"
-cdr_length: "CDRH1,8-8,CDRH2,8-8,CDRH3,9-21"
 
 # ── Model ────────────────────────────────────────────────────────────────────
 config: /home/seanwang/PPIFlow_sjw44/configs/inference_nanobody.yaml

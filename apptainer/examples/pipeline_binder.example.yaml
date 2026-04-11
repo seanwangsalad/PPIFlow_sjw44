@@ -1,0 +1,10 @@
+task: binder
+input_pdb: /workspace/apptainer/examples/demo_inputs/target_example.pdb
+target_chain: B
+binder_chain: A
+specified_hotspots: "B119,B141,B200"
+samples_min_length: 75
+samples_max_length: 76
+config: /workspace/configs/inference_binder.yaml
+model_weights: /checkpoints/binder.ckpt
+name: binder_demo

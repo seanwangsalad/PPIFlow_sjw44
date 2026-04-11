@@ -4,57 +4,8 @@ PPIFlow helper functions
 Shared utilities used by pipeline.py.
 """
 
-import json
 import os
 from argparse import Namespace
-from datetime import datetime
-
-
-# ---------------------------------------------------------------------------
-# Pipeline state / resumable logging
-# ---------------------------------------------------------------------------
-
-_STATE_FILE = "pipeline_state.json"
-
-
-class PipelineState:
-    """Persist step-completion status to <output_dir>/pipeline_state.json."""
-
-    def __init__(self, output_dir: str, cfg: dict, resume: bool = False):
-        self.output_dir = output_dir
-        self.path = os.path.join(output_dir, _STATE_FILE)
-        os.makedirs(output_dir, exist_ok=True)
-
-        if resume and os.path.exists(self.path):
-            with open(self.path) as fh:
-                self._data = json.load(fh)
-            completed = [s for s, v in self._data.get("steps", {}).items()
-                         if v.get("status") == "done"]
-            print(f"[pipeline] Resuming run – completed steps: {completed or 'none'}")
-        else:
-            if resume:
-                print(f"[pipeline] --resume set but no state file found at {self.path}; starting fresh.")
-            self._data = {
-                "task": cfg.get("task", "unknown"),
-                "started_at": datetime.now().isoformat(timespec="seconds"),
-                "steps": {},
-            }
-            self._save()
-
-    def is_done(self, step: str) -> bool:
-        return self._data["steps"].get(step, {}).get("status") == "done"
-
-    def mark_done(self, step: str) -> None:
-        self._data["steps"][step] = {
-            "status": "done",
-            "completed_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        self._save()
-        print(f"[pipeline] ✓ {step}")
-
-    def _save(self) -> None:
-        with open(self.path, "w") as fh:
-            json.dump(self._data, fh, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +23,7 @@ def _require(cfg: dict, *keys):
 # Namespace builders
 # ---------------------------------------------------------------------------
 
-def _build_binder_args(cfg: dict, output_dir: str, num_samples: int) -> Namespace:
+def _build_binder_args(cfg: dict, output_dir: str, num_samples: int, resume: bool = False) -> Namespace:
     _require(cfg, "model_weights")
     if cfg.get("input_pdb") is None and cfg.get("input_csv") is None:
         raise ValueError("Binder task requires either 'input_pdb' or 'input_csv'.")
@@ -91,24 +42,35 @@ def _build_binder_args(cfg: dict, output_dir: str, num_samples: int) -> Namespac
         model_weights=cfg["model_weights"],
         output_dir=output_dir,
         name=cfg.get("name"),
+        resume=resume,
     )
 
 
-def _build_antibody_nanobody_args(cfg: dict, output_dir: str, num_samples: int) -> Namespace:
-    _require(cfg, "antigen_pdb", "framework_pdb", "antigen_chain", "heavy_chain", "model_weights")
+def _build_antibody_nanobody_args(cfg: dict, output_dir: str, num_samples: int, resume: bool = False) -> Namespace:
+    _require(cfg, "antigen_pdb", "antigen_chain", "heavy_chain", "model_weights")
+    scaffold_mode = cfg.get("scaffold_pdb") is not None
+    if not scaffold_mode:
+        _require(cfg, "framework_pdb")
     return Namespace(
         antigen_pdb=cfg["antigen_pdb"],
-        framework_pdb=cfg["framework_pdb"],
+        # scaffold mode
+        scaffold_pdb=cfg.get("scaffold_pdb"),
+        scaffold_redesign_residues=cfg.get("scaffold_redesign_residues"),
+        scaffold_redesign_lengths=cfg.get("scaffold_redesign_lengths"),
+        scaffold_redesign_chains=cfg.get("scaffold_redesign_chains"),
+        # legacy mode
+        framework_pdb=cfg.get("framework_pdb"),
+        cdr_length=cfg.get("cdr_length"),
         antigen_chain=cfg["antigen_chain"],
         heavy_chain=cfg["heavy_chain"],
         light_chain=cfg.get("light_chain"),
         specified_hotspots=cfg.get("specified_hotspots"),
-        cdr_length=cfg.get("cdr_length"),
         config=cfg.get("config"),
         samples_per_target=num_samples,
         model_weights=cfg["model_weights"],
         output_dir=output_dir,
         name=cfg.get("name"),
+        resume=resume,
     )
 
 

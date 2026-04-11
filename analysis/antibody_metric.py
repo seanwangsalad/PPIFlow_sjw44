@@ -634,9 +634,11 @@ def calc_rmsd(pdb1, pdb2):
     atoms2 = [a for a in s2.get_atoms() if a.get_id() == "CA"]
 
     if len(atoms1) != len(atoms2):
-        raise ValueError(
-            f"atom lengths not match: {pdb1} ({len(atoms1)}) vs {pdb2} ({len(atoms2)})"
+        import logging
+        logging.getLogger(__name__).warning(
+            f"RMSD skipped: CA atom count mismatch: {pdb1} ({len(atoms1)}) vs {pdb2} ({len(atoms2)})"
         )
+        return float("inf")
 
     sup = Superimposer()
     sup.set_atoms(atoms1, atoms2)

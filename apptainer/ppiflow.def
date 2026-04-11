@@ -1,0 +1,68 @@
+Bootstrap: docker
+From: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+
+%labels
+    Author seanwang
+    Application PPIFlow
+    Description Apptainer image for running PPIFlow on GPU-backed SLURM clusters
+
+%files
+    __ENVIRONMENT_YML__ /opt/src/environment.yml
+
+%post
+    set -eux
+
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        pkg-config \
+        wget
+    rm -rf /var/lib/apt/lists/*
+
+    mkdir -p /opt/conda /opt/bin /opt/src
+
+    curl -L https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C /opt/bin --strip-components=1 bin/micromamba
+    export MAMBA_ROOT_PREFIX=/opt/conda
+    /opt/bin/micromamba create -y -n ppiflow -f /opt/src/environment.yml
+    /opt/bin/micromamba clean --all --yes
+
+    cat >/opt/bin/activate_ppiflow.sh <<'EOF'
+#!/bin/bash
+set -e
+export MAMBA_ROOT_PREFIX=/opt/conda
+eval "$(/opt/bin/micromamba shell hook --shell bash)"
+micromamba activate ppiflow
+export PYTHONUNBUFFERED=1
+export HYDRA_FULL_ERROR=1
+export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/tmp/torch_extensions}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
+mkdir -p "$TORCH_EXTENSIONS_DIR" "$MPLCONFIGDIR"
+exec "$@"
+EOF
+    chmod +x /opt/bin/activate_ppiflow.sh
+
+%environment
+    export MAMBA_ROOT_PREFIX=/opt/conda
+    export PATH=/opt/bin:/opt/conda/envs/ppiflow/bin:$PATH
+    export LD_LIBRARY_PATH=/opt/conda/envs/ppiflow/lib:${LD_LIBRARY_PATH}
+    export PYTHONNOUSERSITE=1
+    export PYTHONUNBUFFERED=1
+    export HYDRA_FULL_ERROR=1
+    export TORCH_EXTENSIONS_DIR=/tmp/torch_extensions
+    export MPLCONFIGDIR=/tmp/matplotlib
+
+%runscript
+    exec /opt/bin/activate_ppiflow.sh "$@"
+
+%test
+    /opt/bin/activate_ppiflow.sh python --version
+    /opt/bin/activate_ppiflow.sh python -c "import torch; print(torch.__version__)"

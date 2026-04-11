@@ -663,10 +663,15 @@ class PpiTestDataset(BaseDataset):
         )
         self.binder_len = np.repeat(self.binder_len, self.batch_size)
 
+        self.start_sample_id = int(getattr(dataset_cfg, 'start_sample_id', 0))
+
         all_sample_ids = []
         for row_id in range(len(self.csv)):
             target_row = self.csv.iloc[row_id]
-            for sample_id, blen in zip(range(self.samples_per_target), self.binder_len):
+            for sample_id, blen in zip(
+                range(self.start_sample_id, self.start_sample_id + self.samples_per_target),
+                self.binder_len,
+            ):
                 all_sample_ids.append((target_row, sample_id, blen))
         self.all_sample_ids = all_sample_ids
 

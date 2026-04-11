@@ -4,6 +4,7 @@ Supports both Antibody (heavy + light chain) and Nanobody (heavy chain only)
 """
 
 import os
+import re
 import random
 import dataclasses
 import yaml
@@ -282,8 +283,6 @@ def process_file(
 ) -> Dict[str, Any]:
     """Process protein file into usable pickles."""
     antigen_file_path = input_info["antigen_pdb"]
-    framework_file_path = input_info["framework_pdb"]
-    cdr_cfg = input_info["cdr_length"]
 
     # Generate output file paths
     antibody_file_path = os.path.join(
@@ -291,14 +290,25 @@ def process_file(
         f"{input_info['pdb_name']}_antibody_sample_{sample_id}.pdb",
     )
 
-    # Merge framework and CDR
-    antibody_mask = _merge_framework_cdr(
-        framework_file_path,
-        input_info["heavy_chain"],
-        cdr_cfg,
-        antibody_file_path,
-        light_chain=input_info.get("light_chain"),
-    )
+    # Build scaffold with redesign regions
+    if "scaffold_pdb" in input_info:
+        antibody_mask = _build_redesigned_scaffold(
+            scaffold_pdb=input_info["scaffold_pdb"],
+            redesign_residues=input_info["redesign_residues"],
+            redesign_lengths=input_info["redesign_lengths"],
+            heavy_chain=input_info["heavy_chain"],
+            antibody_file_path=antibody_file_path,
+            light_chain=input_info.get("light_chain"),
+            redesign_chains=input_info.get("redesign_chains"),
+        )
+    else:
+        antibody_mask = _merge_framework_cdr(
+            input_info["framework_pdb"],
+            input_info["heavy_chain"],
+            input_info["cdr_length"],
+            antibody_file_path,
+            light_chain=input_info.get("light_chain"),
+        )
 
     # Merge antigen and antibody
     pdb_name = input_info["pdb_name"]
@@ -316,6 +326,17 @@ def process_file(
     antibody_len = count_residues(antibody_file_path)
     total_len = count_residues(merged_filepath)
     antigen_len = total_len - antibody_len
+
+    if antigen_len == 0:
+        # List actual chains in the antigen PDB for debugging
+        _parser = PDB.PDBParser(QUIET=True)
+        _ag_struct = _parser.get_structure("ag", antigen_file_path)
+        _ag_chains = [c.id for c in _ag_struct[0].get_chains()]
+        raise ValueError(
+            f"No antigen residues merged! antigen_chain='{input_info['antigen_chain']}' "
+            f"not found in {antigen_file_path} (chains present: {_ag_chains}). "
+            f"Check that antigen_chain in your YAML matches the chain ID in the antigen PDB."
+        )
 
     cdr_mask = np.array(antibody_mask + [0] * antigen_len, dtype=np.int8)
 
@@ -399,29 +420,235 @@ def process_file(
     return metadata
 
 
-def preprocess_csv_and_pkl(args, output_dir: str) -> str:
+def _build_redesigned_scaffold(
+    scaffold_pdb: str,
+    redesign_residues: List[List[int]],
+    redesign_lengths: List[List[int]],
+    heavy_chain: str,
+    antibody_file_path: str,
+    light_chain: Optional[str] = None,
+    redesign_chains: Optional[List[str]] = None,
+) -> List[int]:
+    """Build a scaffold with redesign regions replaced by virtual ALA residues.
+
+    Takes a complete scaffold PDB, removes the specified residue ranges, and
+    inserts virtual ALA residues of sampled lengths in their place.  Works for
+    any number of redesign regions — not limited to 3 CDRs.
+
+    Args:
+        scaffold_pdb: Complete scaffold PDB (all residues present).
+        redesign_residues: Inclusive [start, end] ranges to redesign,
+            e.g. [[26,33],[51,57],[96,110]].
+        redesign_lengths: [min, max] length per region, e.g. [[8,8],[8,8],[9,21]].
+        heavy_chain: Chain ID of the heavy chain.
+        antibody_file_path: Where to write the output PDB.
+        light_chain: Chain ID of the light chain (optional, for antibody).
+        redesign_chains: Which chain each region belongs to, e.g. ["A","A","A","B","B","B"].
+            If omitted, all regions are assigned to heavy_chain.
+
+    Returns:
+        antibody_mask: 0 for framework residues, 1 for designed (inserted) residues.
+    """
+    # Sample a concrete length for each redesign region.
+    sampled_lengths = [random.randint(lo, hi) for lo, hi in redesign_lengths]
+
+    parser_obj = PDB.PDBParser(QUIET=True)
+    structure = parser_obj.get_structure("scaffold", scaffold_pdb)
+    scaffold_chains = [chain.id for chain in structure[0].get_chains()]
+
+    # redesign_chains specifies which SCAFFOLD chain each region belongs to.
+    # If omitted: nanobody (single scaffold chain) → all regions on that chain.
+    #             antibody (two scaffold chains) → must be explicit.
+    if redesign_chains is None:
+        if light_chain is None:
+            # Nanobody: single scaffold chain, all regions on it.
+            redesign_chains = [scaffold_chains[0].upper()] * len(redesign_residues)
+        else:
+            raise ValueError(
+                "scaffold_redesign_chains must be specified for antibody mode. "
+                "Provide a list of scaffold chain IDs, one per redesign region, "
+                "e.g. scaffold_redesign_chains: [A, A, A, B, B, B]"
+            )
+
+    # Build scaffold chain → output chain ID mapping.
+    # The output always uses the user-specified heavy_chain / light_chain IDs.
+    chain_output_map: dict = {}
+    if light_chain is None:
+        # Nanobody: map every scaffold chain to heavy_chain (only one chain expected).
+        for sc in scaffold_chains:
+            chain_output_map[sc.upper()] = heavy_chain.upper()
+    else:
+        # Antibody: first scaffold chain → heavy_chain, second → light_chain.
+        if len(scaffold_chains) >= 1:
+            chain_output_map[scaffold_chains[0].upper()] = heavy_chain.upper()
+        if len(scaffold_chains) >= 2:
+            chain_output_map[scaffold_chains[1].upper()] = light_chain.upper()
+
+    # Map (scaffold_chain_id_upper, res_num) → region index for quick lookup.
+    region_of: dict = {}
+    for idx, (start, end) in enumerate(redesign_residues):
+        chain_id = redesign_chains[idx].upper()
+        for res_num in range(start, end + 1):
+            region_of[(chain_id, res_num)] = idx
+
+    inserted_regions: set = set()
+
+    new_model = PDB.Model.Model(0)
+    antibody_mask: List[int] = []
+
+    for chain in structure[0]:
+        cid = chain.id.upper()
+        # Use the remapped output chain ID.
+        out_chain_id = chain_output_map.get(cid, chain.id)
+        new_chain = PDB.Chain.Chain(out_chain_id)
+        res_counter = 1
+
+        for res in chain.get_residues():
+            key = (cid, res.get_id()[1])
+
+            if key in region_of:
+                ridx = region_of[key]
+                if ridx not in inserted_regions:
+                    # First residue of this region → insert virtual ALAs.
+                    for _ in range(sampled_lengths[ridx]):
+                        new_chain.add(make_virtual_ala(res_counter))
+                        antibody_mask.append(1)
+                        res_counter += 1
+                    inserted_regions.add(ridx)
+                # Skip the original residue (it is being redesigned).
+            else:
+                # Framework residue — keep it.
+                new_res = PDB.Residue.Residue(
+                    (" ", res_counter, " "), res.resname, res.segid
+                )
+                for atom in res:
+                    new_res.add(atom.copy())
+                new_chain.add(new_res)
+                antibody_mask.append(0)
+                res_counter += 1
+
+        new_model.add(new_chain)
+
+    new_structure = PDB.Structure.Structure("redesigned_scaffold")
+    new_structure.add(new_model)
+    io = PDB.PDBIO()
+    io.set_structure(new_structure)
+    io.save(antibody_file_path)
+
+    print(f"Redesign regions: {len(redesign_residues)}, sampled lengths: {sampled_lengths}")
+    return antibody_mask
+
+
+def _generate_framework_reference(
+    scaffold_pdb: str,
+    redesign_residues: List[List[int]],
+    heavy_chain: str,
+    output_path: str,
+    redesign_chains: Optional[List[str]] = None,
+    light_chain: Optional[str] = None,
+) -> None:
+    """Write a framework PDB with redesign residues stripped out.
+
+    Used as the RMSD reference in flow_module_antibody.py so the model can
+    verify that framework residues didn't drift during generation.
+    """
+    parser_obj = PDB.PDBParser(QUIET=True)
+    structure = parser_obj.get_structure("s", scaffold_pdb)
+    scaffold_chains = [chain.id for chain in structure[0].get_chains()]
+
+    if redesign_chains is None:
+        redesign_chains = [scaffold_chains[0].upper()] * len(redesign_residues)
+
+    # Same chain remapping as _build_redesigned_scaffold.
+    chain_output_map: dict = {}
+    if light_chain is None:
+        for sc in scaffold_chains:
+            chain_output_map[sc.upper()] = heavy_chain.upper()
+    else:
+        if len(scaffold_chains) >= 1:
+            chain_output_map[scaffold_chains[0].upper()] = heavy_chain.upper()
+        if len(scaffold_chains) >= 2:
+            chain_output_map[scaffold_chains[1].upper()] = light_chain.upper()
+
+    remove: set = set()
+    for idx, (start, end) in enumerate(redesign_residues):
+        chain_id = redesign_chains[idx].upper()
+        for res_num in range(start, end + 1):
+            remove.add((chain_id, res_num))
+
+    new_model = PDB.Model.Model(0)
+    for chain in structure[0]:
+        cid = chain.id.upper()
+        out_chain_id = chain_output_map.get(cid, chain.id)
+        new_chain = PDB.Chain.Chain(out_chain_id)
+        for res in chain.get_residues():
+            if (cid, res.get_id()[1]) not in remove:
+                new_chain.add(res.copy())
+        new_model.add(new_chain)
+
+    new_structure = PDB.Structure.Structure("framework_ref")
+    new_structure.add(new_model)
+    io = PDB.PDBIO()
+    io.set_structure(new_structure)
+    io.save(output_path)
+
+
+def _count_existing_samples(output_dir: str, name: str) -> int:
+    """Count PDB files already written to output_dir matching {name}_{int}.pdb."""
+    pattern = re.compile(rf"^{re.escape(name)}_(\d+)\.pdb$")
+    if not os.path.isdir(output_dir):
+        return 0
+    return sum(1 for f in os.listdir(output_dir) if pattern.match(f))
+
+
+def preprocess_csv_and_pkl(args, output_dir: str) -> Optional[str]:
     """Process PDB files and generate pkl and metadata CSV."""
     csv_path = os.path.join(output_dir, f"{args.name}_input.csv")
+
+    start_sample_id = 0
+    if getattr(args, 'resume', False):
+        already_done = _count_existing_samples(args.output_dir, args.name)
+        if already_done >= args.samples_per_target:
+            print(f"[resume] All {args.samples_per_target} samples already generated. Nothing to do.")
+            return None
+        if already_done > 0:
+            start_sample_id = already_done
+            print(f"[resume] Found {already_done} existing samples; generating {args.samples_per_target - already_done} more (ids {start_sample_id}–{args.samples_per_target - 1}).")
+    else:
+        # Fresh run: remove any stale CSV from a previous (failed) run to avoid
+        # appending to it and producing duplicate rows.
+        if os.path.exists(csv_path):
+            os.remove(csv_path)
 
     input_info = {
         "antigen_pdb": args.antigen_pdb,
         "antigen_chain": args.antigen_chain,
         "hotspots": args.specified_hotspots,
-        "framework_pdb": args.framework_pdb,
-        "cdr_length": args.cdr_length,
         "heavy_chain": args.heavy_chain,
         "pdb_name": args.name,
     }
 
+    scaffold_pdb = getattr(args, "scaffold_pdb", None)
+    if scaffold_pdb is not None:
+        input_info["scaffold_pdb"] = scaffold_pdb
+        input_info["redesign_residues"] = args.scaffold_redesign_residues
+        input_info["redesign_lengths"] = args.scaffold_redesign_lengths
+        redesign_chains = getattr(args, "scaffold_redesign_chains", None)
+        if redesign_chains is not None:
+            input_info["redesign_chains"] = redesign_chains
+    else:
+        input_info["framework_pdb"] = args.framework_pdb
+        input_info["cdr_length"] = args.cdr_length
+
     if hasattr(args, "light_chain") and args.light_chain:
         input_info["light_chain"] = args.light_chain
 
-    for sample_id in range(args.samples_per_target):
+    for sample_id in range(start_sample_id, args.samples_per_target):
         metadata = process_file(
             input_info, write_dir=output_dir, sample_id=sample_id
         )
         metadata_df = pd.DataFrame([metadata])
-        header = False if sample_id > 0 else True
+        header = sample_id == start_sample_id
         metadata_df.to_csv(csv_path, index=False, mode="a", header=header)
 
     return csv_path
@@ -434,6 +661,16 @@ def preprocess_csv_and_pkl(args, output_dir: str) -> str:
 
 def run_pipeline(args):
     """Execute the full sampling pipeline."""
+    import json
+
+    # Parse scaffold redesign args from JSON strings (CLI) or leave as-is (pipeline.py Namespace)
+    if isinstance(getattr(args, "scaffold_redesign_residues", None), str):
+        args.scaffold_redesign_residues = json.loads(args.scaffold_redesign_residues)
+    if isinstance(getattr(args, "scaffold_redesign_lengths", None), str):
+        args.scaffold_redesign_lengths = json.loads(args.scaffold_redesign_lengths)
+    if isinstance(getattr(args, "scaffold_redesign_chains", None), str):
+        args.scaffold_redesign_chains = json.loads(args.scaffold_redesign_chains)
+
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
@@ -443,6 +680,22 @@ def run_pipeline(args):
     processed_csv_path = preprocess_csv_and_pkl(
         args=args, output_dir=input_data_dir
     )
+    if processed_csv_path is None:
+        return
+
+    # In scaffold mode, generate a framework reference PDB for RMSD validation
+    scaffold_pdb = getattr(args, "scaffold_pdb", None)
+    if scaffold_pdb is not None:
+        framework_ref_path = os.path.join(input_data_dir, f"{args.name}_framework_ref.pdb")
+        _generate_framework_reference(
+            scaffold_pdb, args.scaffold_redesign_residues,
+            args.heavy_chain, framework_ref_path,
+            redesign_chains=getattr(args, "scaffold_redesign_chains", None),
+            light_chain=getattr(args, "light_chain", None),
+        )
+        framework_pdb = framework_ref_path
+    else:
+        framework_pdb = args.framework_pdb
 
     # Load and update configuration
     conf = ConfigManager(args.config)
@@ -461,7 +714,7 @@ def run_pipeline(args):
                 "light_chain": args.light_chain,
             },
             "checkpointer": {"dirpath": args.output_dir},
-            "framework_pdb": args.framework_pdb,
+            "framework_pdb": framework_pdb,
         },
     }
     conf.update_config(update_configs)
@@ -512,11 +765,42 @@ def get_parser():
         help="Specify hotspot residues, e.g., 'C56,C58'",
     )
 
-    # Framework
+    # Framework — provide either framework_pdb+cdr_length (old) or
+    # scaffold_pdb+scaffold_redesign_residues+scaffold_redesign_lengths (new)
     parser.add_argument(
         "--framework_pdb",
         type=str,
-        help="Input framework protein PDB file path",
+        default=None,
+        help="Pre-trimmed framework PDB (CDR loops removed, gaps present).",
+    )
+    parser.add_argument(
+        "--scaffold_pdb",
+        type=str,
+        default=None,
+        help="Complete scaffold PDB (all residues present). "
+             "Use with --scaffold_redesign_residues and --scaffold_redesign_lengths.",
+    )
+    parser.add_argument(
+        "--scaffold_redesign_residues",
+        type=str,
+        default=None,
+        help="JSON-style list of inclusive [start,end] residue ranges to redesign, "
+             "e.g. '[[26,33],[51,57],[96,110]]'.",
+    )
+    parser.add_argument(
+        "--scaffold_redesign_lengths",
+        type=str,
+        default=None,
+        help="JSON-style list of [min,max] length ranges per redesign region, "
+             "e.g. '[[8,8],[8,8],[9,21]]'.",
+    )
+    parser.add_argument(
+        "--scaffold_redesign_chains",
+        type=str,
+        default=None,
+        help="JSON-style list of chain IDs per redesign region, "
+             "e.g. '[\"A\",\"A\",\"A\",\"B\",\"B\",\"B\"]'. "
+             "If omitted, all regions assigned to heavy_chain.",
     )
     parser.add_argument(
         "--heavy_chain", type=str, help="Chain id of the heavy chain"
@@ -560,6 +844,12 @@ def get_parser():
     )
     parser.add_argument(
         "--name", type=str, default="test_target", help="Test target name"
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help="Resume generation, skipping samples already written to output_dir.",
     )
     return parser
 
