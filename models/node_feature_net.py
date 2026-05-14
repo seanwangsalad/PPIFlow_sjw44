@@ -44,6 +44,16 @@ class NodeFeatureNet(nn.Module):
             pos_emb = torch.zeros(b, num_res, self.c_pos_emb, device=device)
         else:
             pos_emb = get_index_embedding(pos, self.c_pos_emb, max_len=2056)
+        # downweight absolute index embedding on designed residues to reduce
+        # N-term spatial anchoring (diffuse_mask==1 = residues being designed)
+        binder_scale = getattr(self._cfg, 'binder_pos_emb_scale', 1.0)
+        if binder_scale != 1.0:
+            scale = torch.where(
+                diffuse_mask.bool().unsqueeze(-1),
+                torch.tensor(binder_scale, device=device, dtype=pos_emb.dtype),
+                torch.tensor(1.0, device=device, dtype=pos_emb.dtype),
+            )
+            pos_emb = pos_emb * scale
         pos_emb = pos_emb * res_mask.unsqueeze(-1)
 
         # [b, n_res, c_timestep_emb]

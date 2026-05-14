@@ -226,6 +226,16 @@ def process_file(input_info, write_dir, id):
 
     ag_chains = list(input_info["antigen_chain"])
 
+    declared_chains = set(ab_chains) | set(ag_chains)
+    pdb_chains_present = set(res_counts.keys())
+    missing = declared_chains - pdb_chains_present
+    if missing:
+        raise ValueError(
+            f"YAML chains {sorted(missing)} not found in complex_pdb "
+            f"'{filepath}'. Chains present: {sorted(pdb_chains_present)}. "
+            f"Check heavy_chain/light_chain/antigen_chain in YAML match PDB."
+        )
+
     ab_length = sum(res_counts[ab_chain] for ab_chain in ab_chains)
     ag_length = sum(res_counts[ag_chain] for ag_chain in ag_chains)
     total_length = ab_length + ag_length
@@ -242,8 +252,8 @@ def process_file(input_info, write_dir, id):
         structure, fix_structure_trans
     )
     fix_structure_mask = np.zeros(total_length, dtype=np.int8)
-    fix_structure_mask[ab_length:] = 1
     fix_structure_mask[fix_structure_indices] = 1
+    # antigen positions added below once chain_index is available (order-independent)
 
     hotspot_index = get_indices_from_spec(
         structure, input_info["hotspots"]
@@ -296,6 +306,9 @@ def process_file(input_info, write_dir, id):
             complex_feats["chain_index"],
         ),
     )
+
+    ag_residue_mask = np.isin(complex_feats["chain_index"], ag_chain_ints)
+    fix_structure_mask[ag_residue_mask] = 1
 
     complex_feats["fix_structure_mask"] = fix_structure_mask
     complex_feats["cdr_mask"] = cdr_mask

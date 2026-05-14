@@ -79,6 +79,7 @@ model:
     embed_chain: true
     embed_aatype: true
     n_aatype: 22
+    binder_pos_emb_scale: 0.5   # scale absolute pos_emb on designed residues (diffuse_mask==1); 1.0=default, <1.0 reduces N-term anchoring
   edge_features:
     single_bias_transition_n: 2
     c_s: ${model.node_embed_size}
