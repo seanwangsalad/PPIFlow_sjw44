@@ -186,6 +186,8 @@ def expand_ranges(s: str) -> str:
         String with all ranges expanded to individual residue specifications.
         Returns original string if no ranges are present.
     """
+    if not s:
+        return ""
     if "-" not in s:
         return s
 
@@ -438,8 +440,9 @@ def get_parser():
     parser.add_argument(
         "--fixed_positions",
         type=str,
-        required=True,
-        help="Key residues to fix in complex_pdb. Format: 'H26,H27,H28,L50-63' (chain ID + residue number, '-' for ranges).",
+        required=False,
+        default=None,
+        help="Key residues to fix in complex_pdb. Format: 'H26,H27,H28,L50-63' (chain ID + residue number, '-' for ranges). Omit to flow the whole binder (antigen still fixed).",
     )
     parser.add_argument(
         "--cdr_position",

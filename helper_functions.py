@@ -88,10 +88,10 @@ def _build_monomer_args(cfg: dict, output_dir: str, num_samples: int) -> Namespa
 
 
 def _build_partial_antibody_nanobody_args(cfg: dict, output_dir: str, num_samples: int) -> Namespace:
-    _require(cfg, "complex_pdb", "fixed_positions", "antigen_chain", "heavy_chain", "start_t", "model_weights")
+    _require(cfg, "complex_pdb", "antigen_chain", "heavy_chain", "start_t", "model_weights")
     return Namespace(
         complex_pdb=cfg["complex_pdb"],
-        fixed_positions=cfg["fixed_positions"],
+        fixed_positions=cfg.get("fixed_positions"),
         cdr_position=cfg.get("cdr_position"),
         antigen_chain=cfg["antigen_chain"],
         heavy_chain=cfg["heavy_chain"],
