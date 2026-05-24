@@ -180,9 +180,20 @@ Note: in binder outputs, `hotspot_mask + target_interface_mask` can sum to 2.0 o
 | `specified_hotspots` | No | e.g. `"C11,C14,C101"` |
 | `cdr_length` | No (gen only) | e.g. `"CDRH1,8-8,CDRH3,10-20"` |
 | `cdr_position` | No (partial only) | e.g. `"A26-33,A51-58"` |
-| `fixed_positions` | Yes (partial only) | Residues that must not move |
+| `fixed_positions` | No (partial only) | Residues that must not move. Omit → whole binder flows (antigen still fixed). |
 | `start_t` | Yes (partial only) | 0.0–1.0 |
 | `retry_Limit` | No (partial only) | Default: 10 |
+
+#### `partial_flow_ab` without fixed residues
+`fixed_positions` is optional. Omit it (or pass empty) → `fix_structure_mask` becomes
+antigen-only, so `diffuse_mask=1` over the entire binder and the whole nanobody/antibody
+backbone flows from its noised-at-`start_t` input (antigen held fixed). Framework *sequence*
+is still retained via `fix_sequence_mask`; only structure flows. `cdr_position` is
+independent (drives `cdr_mask` / aatype masking only).
+
+Enabled by: `expand_ranges` None-guard + optional `--fixed_positions` in
+`scripts/sample_antibody_nanobody_partial.py`; `_require` drops `fixed_positions` and the
+builder uses `cfg.get("fixed_positions")` in `helper_functions.py`.
 
 ### Monomer / motif_scaffolding
 | Key | Required | Notes |
